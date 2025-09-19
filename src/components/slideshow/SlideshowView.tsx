@@ -1,0 +1,461 @@
+import React, { useEffect, useCallback, useState, useRef } from 'react';
+import { useSlideshow } from '../../hooks/useSlideshow';
+import { useAppStore } from '../../stores/app-store';
+import { MediaType } from '../../types';
+
+interface SlideshowViewProps {
+  className?: string;
+  onError?: (error: Error) => void;
+}
+
+export const SlideshowView: React.FC<SlideshowViewProps> = ({
+  className = '',
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+
+  // Store and hooks
+  const slideshow = useSlideshow();
+  const {
+    ui: { isMobile },
+  } = useAppStore();
+
+  // Current post data
+  const currentPost = slideshow.currentPost;
+  const hasContent = (slideshow.slideshow.posts || []).length > 0;
+
+  // Auto-hide controls on mobile
+  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const hideControlsAfterDelay = useCallback(() => {
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+    }
+
+    if (isMobile) {
+      controlsTimeoutRef.current = setTimeout(() => {
+        setShowControls(false);
+      }, 3000); // Hide after 3 seconds of inactivity
+    }
+  }, [isMobile]);
+
+  const showControlsTemporarily = useCallback(() => {
+    setShowControls(true);
+    hideControlsAfterDelay();
+  }, [hideControlsAfterDelay]);
+
+  // Fullscreen management
+  const toggleFullscreen = useCallback(async () => {
+    if (!containerRef.current) return;
+
+    try {
+      if (!document.fullscreenElement) {
+        await containerRef.current.requestFullscreen();
+        setIsFullscreen(true);
+      } else {
+        await document.exitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch (error) {
+      console.warn('Fullscreen toggle failed:', error);
+    }
+  }, []);
+
+  // Listen for fullscreen changes
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () =>
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  // Mouse movement handler for showing controls
+  const handleMouseMove = useCallback(() => {
+    if (!isMobile) {
+      showControlsTemporarily();
+    }
+  }, [isMobile, showControlsTemporarily]);
+
+  // Load mock data for testing (TODO: Remove this and load real data)
+  useEffect(() => {
+    if (hasContent) return; // Only load if no content exists
+
+    const mockPosts = [
+      {
+        id: '1',
+        postId: 1,
+        title: 'Beautiful Nature Scene',
+        url: 'https://picsum.photos/800/600?random=1',
+        mediaType: MediaType.IMAGE,
+        thumbnailUrl: 'https://picsum.photos/200/150?random=1',
+        creator: {
+          id: 1,
+          name: 'testuser',
+          display_name: 'Test User',
+          published: '2024-01-01T00:00:00Z',
+          avatar: undefined,
+          banned: false,
+          deleted: false,
+          actor_id: 'https://lemmy.world/u/testuser',
+          bio: undefined,
+          local: true,
+          banner: undefined,
+          updated: undefined,
+          inbox_url: 'https://lemmy.world/u/testuser/inbox',
+          shared_inbox_url: 'https://lemmy.world/inbox',
+          matrix_user_id: undefined,
+          admin: false,
+          bot_account: false,
+          ban_expires: undefined,
+        },
+        community: {
+          id: 1,
+          name: 'pics',
+          title: 'Pictures',
+          description: 'A community for pictures',
+          removed: false,
+          published: '2024-01-01T00:00:00Z',
+          updated: undefined,
+          deleted: false,
+          nsfw: false,
+          actor_id: 'https://lemmy.world/c/pics',
+          local: true,
+          icon: undefined,
+          banner: undefined,
+          followers_url: 'https://lemmy.world/c/pics/followers',
+          inbox_url: 'https://lemmy.world/c/pics/inbox',
+          shared_inbox_url: 'https://lemmy.world/inbox',
+          hidden: false,
+          posting_restricted_to_mods: false,
+          instance_id: 1,
+        },
+        score: 42,
+        published: '2024-01-15T10:30:00Z',
+        nsfw: false,
+        starred: false,
+        viewed: false,
+      },
+      {
+        id: '2',
+        postId: 2,
+        title: 'Amazing Sunset',
+        url: 'https://picsum.photos/800/600?random=2',
+        mediaType: MediaType.IMAGE,
+        thumbnailUrl: 'https://picsum.photos/200/150?random=2',
+        creator: {
+          id: 2,
+          name: 'photographer',
+          display_name: 'Photographer',
+          published: '2024-01-01T00:00:00Z',
+          avatar: undefined,
+          banned: false,
+          deleted: false,
+          actor_id: 'https://lemmy.world/u/photographer',
+          bio: undefined,
+          local: true,
+          banner: undefined,
+          updated: undefined,
+          inbox_url: 'https://lemmy.world/u/photographer/inbox',
+          shared_inbox_url: 'https://lemmy.world/inbox',
+          matrix_user_id: undefined,
+          admin: false,
+          bot_account: false,
+          ban_expires: undefined,
+        },
+        community: {
+          id: 1,
+          name: 'pics',
+          title: 'Pictures',
+          description: 'A community for pictures',
+          removed: false,
+          published: '2024-01-01T00:00:00Z',
+          updated: undefined,
+          deleted: false,
+          nsfw: false,
+          actor_id: 'https://lemmy.world/c/pics',
+          local: true,
+          icon: undefined,
+          banner: undefined,
+          followers_url: 'https://lemmy.world/c/pics/followers',
+          inbox_url: 'https://lemmy.world/c/pics/inbox',
+          shared_inbox_url: 'https://lemmy.world/inbox',
+          hidden: false,
+          posting_restricted_to_mods: false,
+          instance_id: 1,
+        },
+        score: 128,
+        published: '2024-01-16T14:20:00Z',
+        nsfw: false,
+        starred: false,
+        viewed: false,
+      },
+    ];
+
+    slideshow.setPosts(mockPosts);
+  }, [hasContent, slideshow]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyPress = (event: KeyboardEvent) => {
+      if (!hasContent) return;
+
+      switch (event.code) {
+        case 'Space':
+          event.preventDefault();
+          slideshow.togglePlay();
+          break;
+        case 'ArrowLeft':
+          event.preventDefault();
+          slideshow.previous();
+          break;
+        case 'ArrowRight':
+          event.preventDefault();
+          slideshow.next();
+          break;
+        case 'KeyF':
+          event.preventDefault();
+          toggleFullscreen();
+          break;
+        case 'KeyH':
+          event.preventDefault();
+          showControlsTemporarily();
+          break;
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyPress);
+    return () => document.removeEventListener('keydown', handleKeyPress);
+  }, [hasContent, slideshow, toggleFullscreen, showControlsTemporarily]);
+
+  // Cleanup timeouts
+  useEffect(() => {
+    return () => {
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Loading state
+  if (!currentPost && hasContent) {
+    return (
+      <div className={`slideshow-container ${className} bg-black`}>
+        <div className='flex items-center justify-center h-full'>
+          <div className='animate-spin rounded-full h-32 w-32 border-b-2 border-white'></div>
+        </div>
+      </div>
+    );
+  }
+
+  // Empty state
+  if (!hasContent) {
+    return (
+      <div
+        className={`slideshow-container ${className} bg-black flex items-center justify-center min-h-screen`}
+      >
+        <div className='text-center text-white'>
+          <h2 className='text-2xl font-bold mb-4'>No content available</h2>
+          <p className='text-gray-300 mb-6'>
+            Select some communities or users to start the slideshow
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (!currentPost && !hasContent) {
+    return (
+      <div
+        className={`slideshow-container ${className} bg-black flex items-center justify-center min-h-screen`}
+      >
+        <div className='text-center text-white'>
+          <h2 className='text-2xl font-bold mb-4'>Unable to load content</h2>
+          <p className='text-gray-300 mb-6'>Something went wrong</p>
+          <button
+            onClick={slideshow.resetSlideshow}
+            className='px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors'
+          >
+            Try Again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className={`slideshow-container ${className} ${
+        isFullscreen ? 'fullscreen' : ''
+      } bg-black min-h-screen relative overflow-hidden`}
+      onMouseMove={handleMouseMove}
+    >
+      {/* Main media display */}
+      <div className='absolute inset-0 flex items-center justify-center'>
+        {currentPost && (
+          <div className='max-w-full max-h-full'>
+            {currentPost.mediaType === 'video' ? (
+              <video
+                src={currentPost.url}
+                className='max-w-full max-h-full object-contain'
+                controls={false}
+                autoPlay
+                muted
+                playsInline
+              />
+            ) : (
+              <img
+                src={currentPost.url}
+                alt={currentPost.title}
+                className='max-w-full max-h-full object-contain'
+                onError={() => {
+                  console.error('Image load error for:', currentPost.url);
+                  slideshow.next();
+                }}
+              />
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Progress indicator */}
+      <div
+        className={`absolute top-4 left-1/2 transform -translate-x-1/2 z-20 transition-opacity duration-300 ${
+          showControls ? 'opacity-100' : 'opacity-0'
+        }`}
+      >
+        <div className='bg-black bg-opacity-50 rounded-full px-4 py-2 text-white text-sm'>
+          {(slideshow.slideshow.currentIndex || 0) + 1} /{' '}
+          {(slideshow.slideshow.posts || []).length}
+          {slideshow.slideshow.isPlaying && (
+            <span className='ml-2 animate-pulse'>▶</span>
+          )}
+        </div>
+      </div>
+
+      {/* Attribution overlay */}
+      {currentPost && (
+        <div
+          className={`absolute bottom-20 left-4 right-4 z-20 transition-opacity duration-300 ${
+            showControls || !isMobile ? 'opacity-100' : 'opacity-30'
+          }`}
+        >
+          <div className='bg-black bg-opacity-50 rounded-lg p-4 text-white'>
+            <h3 className='font-semibold text-lg mb-1 truncate'>
+              {currentPost.title}
+            </h3>
+            <div className='text-sm text-gray-300'>
+              <span>r/{currentPost.community.name}</span>
+              <span className='mx-2'>•</span>
+              <span>u/{currentPost.creator.name}</span>
+              <span className='mx-2'>•</span>
+              <span>{currentPost.score} points</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Slideshow controls */}
+      <div
+        className={`absolute bottom-4 left-1/2 transform -translate-x-1/2 z-30 transition-opacity duration-300 ${
+          showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+      >
+        <div className='flex items-center space-x-4 bg-black bg-opacity-50 rounded-full px-6 py-3'>
+          <button
+            onClick={slideshow.previous}
+            disabled={slideshow.isFirstPost}
+            className='text-white hover:text-blue-400 disabled:text-gray-500 disabled:cursor-not-allowed'
+          >
+            <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+              <path
+                fillRule='evenodd'
+                d='M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z'
+                clipRule='evenodd'
+              />
+            </svg>
+          </button>
+
+          <button
+            onClick={slideshow.togglePlay}
+            className='text-white hover:text-blue-400'
+          >
+            {slideshow.slideshow.isPlaying ? (
+              <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+                <path
+                  fillRule='evenodd'
+                  d='M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z'
+                  clipRule='evenodd'
+                />
+              </svg>
+            ) : (
+              <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+                <path
+                  fillRule='evenodd'
+                  d='M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z'
+                  clipRule='evenodd'
+                />
+              </svg>
+            )}
+          </button>
+
+          <button
+            onClick={slideshow.next}
+            disabled={slideshow.isLastPost}
+            className='text-white hover:text-blue-400 disabled:text-gray-500 disabled:cursor-not-allowed'
+          >
+            <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+              <path
+                fillRule='evenodd'
+                d='M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z'
+                clipRule='evenodd'
+              />
+            </svg>
+          </button>
+
+          <button
+            onClick={toggleFullscreen}
+            className='text-white hover:text-blue-400'
+          >
+            {isFullscreen ? (
+              <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+                <path
+                  fillRule='evenodd'
+                  d='M3 4a1 1 0 011-1h4a1 1 0 010 2H6.414l2.293 2.293a1 1 0 11-1.414 1.414L5 6.414V8a1 1 0 01-2 0V4zm9 1a1 1 0 010-2h4a1 1 0 011 1v4a1 1 0 01-2 0V6.414l-2.293 2.293a1 1 0 11-1.414-1.414L13.586 5H12zm-9 7a1 1 0 012 0v1.586l2.293-2.293a1 1 0 111.414 1.414L6.414 15H8a1 1 0 010 2H4a1 1 0 01-1-1v-4zm13-1a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 010-2h1.586l-2.293-2.293a1 1 0 111.414-1.414L15 13.586V12a1 1 0 011-1z'
+                  clipRule='evenodd'
+                />
+              </svg>
+            ) : (
+              <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+                <path
+                  fillRule='evenodd'
+                  d='M3 4a1 1 0 011-1h4a1 1 0 010 2H6.414l2.293 2.293a1 1 0 11-1.414 1.414L5 6.414V8a1 1 0 01-2 0V4zm9 1a1 1 0 010-2h4a1 1 0 011 1v4a1 1 0 01-2 0V6.414l-2.293 2.293a1 1 0 11-1.414-1.414L13.586 5H12z'
+                  clipRule='evenodd'
+                />
+              </svg>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Keyboard shortcuts help */}
+      {!isMobile && showControls && (
+        <div className='absolute top-4 right-4 z-20 text-white text-sm opacity-70'>
+          <div className='bg-black bg-opacity-50 rounded px-3 py-2'>
+            <div>Space: Play/Pause</div>
+            <div>← →: Navigate</div>
+            <div>F: Fullscreen</div>
+            <div>H: Show controls</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default SlideshowView;
