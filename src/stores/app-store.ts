@@ -5,6 +5,7 @@ import {
   createJSONStorage,
 } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
+import { enableMapSet } from 'immer';
 import type {
   AppState,
   SlideshowState,
@@ -17,6 +18,9 @@ import type {
   MediaType,
 } from '@types';
 import { STORAGE_KEYS } from '@constants';
+
+// Enable Immer's MapSet plugin for Set/Map support
+enableMapSet();
 
 // Define the initial states
 const initialSlideshowState: SlideshowState = {
@@ -413,6 +417,20 @@ export const useAppStore = create<AppStore>()(
         rehydrate: () => {
           // This will be called after the store is rehydrated from storage
           set((state) => {
+            // Ensure content state has all required fields
+            if (!state.content.viewedPosts) {
+              state.content.viewedPosts = new Set();
+            }
+            if (!state.content.queue) {
+              state.content.queue = [];
+            }
+            if (typeof state.content.currentBatch !== 'number') {
+              state.content.currentBatch = 1;
+            }
+            if (typeof state.content.hasMore !== 'boolean') {
+              state.content.hasMore = true;
+            }
+
             // Convert Set back from array if needed
             if (Array.isArray(state.content.viewedPosts)) {
               state.content.viewedPosts = new Set(

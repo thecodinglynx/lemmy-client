@@ -1,7 +1,12 @@
 import React, { useEffect, useCallback, useState, useRef } from 'react';
 import { useSlideshow } from '../../hooks/useSlideshow';
 import { useAppStore } from '../../stores/app-store';
+import { useKeyboardNavigation } from '../../hooks/use-keyboard-navigation';
+import { useTouchGestures } from '../../hooks/use-touch-gestures';
+import HelpOverlay from '../common/HelpOverlay';
+import { GestureFeedback, type GestureFeedbackRef } from './GestureFeedback';
 import { MediaType } from '../../types';
+import './gesture-feedback.css';
 
 interface SlideshowViewProps {
   className?: string;
@@ -12,8 +17,10 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
   className = '',
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const gestureFeedbackRef = useRef<GestureFeedbackRef>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
+  const [showHelpOverlay, setShowHelpOverlay] = useState(false);
 
   // Store and hooks
   const slideshow = useSlideshow();
@@ -61,6 +68,110 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
       console.warn('Fullscreen toggle failed:', error);
     }
   }, []);
+
+  // Star/favorite handler
+  const handleStar = useCallback(() => {
+    if (currentPost) {
+      // TODO: Implement starring functionality
+      console.log('Starring post:', currentPost.id);
+    }
+  }, [currentPost]);
+
+  // Set timing handler
+  const handleSetTiming = useCallback(
+    (seconds: number) => {
+      // Set timing for both images and gifs
+      slideshow.setTiming('images', seconds * 1000); // Convert to milliseconds
+      slideshow.setTiming('gifs', seconds * 1000);
+      console.log('Set timing to:', seconds, 'seconds');
+    },
+    [slideshow]
+  );
+
+  // Setup keyboard navigation
+  useKeyboardNavigation({
+    onPlay: slideshow.play,
+    onPause: slideshow.pause,
+    onNext: slideshow.next,
+    onPrevious: slideshow.previous,
+    onToggleFullscreen: toggleFullscreen,
+    onStar: handleStar,
+    onSetTiming: handleSetTiming,
+    isPlaying: slideshow.slideshow.isPlaying,
+  });
+
+  // Setup touch gestures
+  const touchGestures = useTouchGestures(
+    {
+      onSwipeLeft: useCallback(() => {
+        // Swipe left = next slide
+        if (!slideshow.isLastPost) {
+          slideshow.next();
+          showControlsTemporarily();
+          gestureFeedbackRef.current?.showSwipeLeft();
+        }
+      }, [slideshow, showControlsTemporarily]),
+
+      onSwipeRight: useCallback(() => {
+        // Swipe right = previous slide
+        if (!slideshow.isFirstPost) {
+          slideshow.previous();
+          showControlsTemporarily();
+          gestureFeedbackRef.current?.showSwipeRight();
+        }
+      }, [slideshow, showControlsTemporarily]),
+
+      onTap: useCallback(
+        (event: TouchEvent) => {
+          // Single tap = toggle controls visibility
+          if (isMobile) {
+            if (showControls) {
+              setShowControls(false);
+            } else {
+              showControlsTemporarily();
+            }
+            // Show tap feedback at touch location
+            const touch = event.changedTouches[0];
+            if (touch && containerRef.current) {
+              const rect = containerRef.current.getBoundingClientRect();
+              const x = touch.clientX - rect.left;
+              const y = touch.clientY - rect.top;
+              gestureFeedbackRef.current?.showTapFeedback(x, y);
+            }
+          } else {
+            // On desktop, tap to play/pause
+            slideshow.togglePlay();
+          }
+        },
+        [isMobile, showControls, showControlsTemporarily, slideshow]
+      ),
+
+      onLongPress: useCallback(() => {
+        // Long press = toggle fullscreen
+        toggleFullscreen();
+        gestureFeedbackRef.current?.showLongPressFeedback();
+      }, [toggleFullscreen]),
+    },
+    {
+      minSwipeDistance: 50, // Increased for more deliberate swipes
+      maxSwipeTime: 500,
+      preventDefaultOnSwipe: true,
+      maxTapDuration: 300,
+      maxTapMovement: 10,
+    }
+  );
+
+  // Attach touch gestures to container
+  useEffect(() => {
+    if (containerRef.current) {
+      touchGestures.attachToElement(containerRef.current);
+    }
+  }, [touchGestures]);
+
+  // Handle help overlay
+  const toggleHelpOverlay = useCallback(() => {
+    setShowHelpOverlay(!showHelpOverlay);
+  }, [showHelpOverlay]);
 
   // Listen for fullscreen changes
   useEffect(() => {
@@ -198,38 +309,7 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     slideshow.setPosts(mockPosts);
   }, [hasContent, slideshow]);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyPress = (event: KeyboardEvent) => {
-      if (!hasContent) return;
-
-      switch (event.code) {
-        case 'Space':
-          event.preventDefault();
-          slideshow.togglePlay();
-          break;
-        case 'ArrowLeft':
-          event.preventDefault();
-          slideshow.previous();
-          break;
-        case 'ArrowRight':
-          event.preventDefault();
-          slideshow.next();
-          break;
-        case 'KeyF':
-          event.preventDefault();
-          toggleFullscreen();
-          break;
-        case 'KeyH':
-          event.preventDefault();
-          showControlsTemporarily();
-          break;
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyPress);
-    return () => document.removeEventListener('keydown', handleKeyPress);
-  }, [hasContent, slideshow, toggleFullscreen, showControlsTemporarily]);
+  // Listen for help overlay toggle (H key)
 
   // Cleanup timeouts
   useEffect(() => {
@@ -294,6 +374,10 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
         isFullscreen ? 'fullscreen' : ''
       } bg-black min-h-screen relative overflow-hidden`}
       onMouseMove={handleMouseMove}
+      tabIndex={0}
+      role='region'
+      aria-label={`Media slideshow - ${currentPost?.title || 'Loading...'} (${slideshow.slideshow.currentIndex + 1} of ${(slideshow.slideshow.posts || []).length})`}
+      aria-live='polite'
     >
       {/* Main media display */}
       <div className='absolute inset-0 flex items-center justify-center'>
@@ -366,13 +450,26 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
-        <div className='flex items-center space-x-4 bg-black bg-opacity-50 rounded-full px-6 py-3'>
+        <div
+          className={`flex items-center ${
+            isMobile
+              ? 'space-x-6 bg-black bg-opacity-70 rounded-2xl px-8 py-4'
+              : 'space-x-4 bg-black bg-opacity-50 rounded-full px-6 py-3'
+          }`}
+        >
           <button
             onClick={slideshow.previous}
             disabled={slideshow.isFirstPost}
-            className='text-white hover:text-blue-400 disabled:text-gray-500 disabled:cursor-not-allowed'
+            className={`text-white hover:text-blue-400 disabled:text-gray-500 disabled:cursor-not-allowed transition-all ${
+              isMobile ? 'p-3 bg-white bg-opacity-20 rounded-full' : ''
+            }`}
+            aria-label='Previous slide'
           >
-            <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+            <svg
+              className={`${isMobile ? 'w-8 h-8' : 'w-6 h-6'}`}
+              fill='currentColor'
+              viewBox='0 0 20 20'
+            >
               <path
                 fillRule='evenodd'
                 d='M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z'
@@ -383,10 +480,21 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
 
           <button
             onClick={slideshow.togglePlay}
-            className='text-white hover:text-blue-400'
+            className={`text-white hover:text-blue-400 transition-all ${
+              isMobile ? 'p-3 bg-white bg-opacity-20 rounded-full' : ''
+            }`}
+            aria-label={
+              slideshow.slideshow.isPlaying
+                ? 'Pause slideshow'
+                : 'Play slideshow'
+            }
           >
             {slideshow.slideshow.isPlaying ? (
-              <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+              <svg
+                className={`${isMobile ? 'w-8 h-8' : 'w-6 h-6'}`}
+                fill='currentColor'
+                viewBox='0 0 20 20'
+              >
                 <path
                   fillRule='evenodd'
                   d='M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z'
@@ -394,7 +502,11 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
                 />
               </svg>
             ) : (
-              <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+              <svg
+                className={`${isMobile ? 'w-8 h-8' : 'w-6 h-6'}`}
+                fill='currentColor'
+                viewBox='0 0 20 20'
+              >
                 <path
                   fillRule='evenodd'
                   d='M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z'
@@ -407,9 +519,16 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
           <button
             onClick={slideshow.next}
             disabled={slideshow.isLastPost}
-            className='text-white hover:text-blue-400 disabled:text-gray-500 disabled:cursor-not-allowed'
+            className={`text-white hover:text-blue-400 disabled:text-gray-500 disabled:cursor-not-allowed transition-all ${
+              isMobile ? 'p-3 bg-white bg-opacity-20 rounded-full' : ''
+            }`}
+            aria-label='Next slide'
           >
-            <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+            <svg
+              className={`${isMobile ? 'w-8 h-8' : 'w-6 h-6'}`}
+              fill='currentColor'
+              viewBox='0 0 20 20'
+            >
               <path
                 fillRule='evenodd'
                 d='M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z'
@@ -418,9 +537,83 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
             </svg>
           </button>
 
+          {!isMobile && (
+            <button
+              onClick={toggleFullscreen}
+              className='text-white hover:text-blue-400'
+              aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            >
+              {isFullscreen ? (
+                <svg
+                  className='w-6 h-6'
+                  fill='currentColor'
+                  viewBox='0 0 20 20'
+                >
+                  <path
+                    fillRule='evenodd'
+                    d='M3 4a1 1 0 011-1h4a1 1 0 010 2H6.414l2.293 2.293a1 1 0 11-1.414 1.414L5 6.414V8a1 1 0 01-2 0V4zm9 1a1 1 0 010-2h4a1 1 0 011 1v4a1 1 0 01-2 0V6.414l-2.293 2.293a1 1 0 11-1.414-1.414L13.586 5H12zm-9 7a1 1 0 012 0v1.586l2.293-2.293a1 1 0 111.414 1.414L6.414 15H8a1 1 0 010 2H4a1 1 0 01-1-1v-4zm13-1a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 010-2h1.586l-2.293-2.293a1 1 0 111.414-1.414L15 13.586V12a1 1 0 011-1z'
+                    clipRule='evenodd'
+                  />
+                </svg>
+              ) : (
+                <svg
+                  className='w-6 h-6'
+                  fill='currentColor'
+                  viewBox='0 0 20 20'
+                >
+                  <path
+                    fillRule='evenodd'
+                    d='M3 4a1 1 0 011-1h4a1 1 0 010 2H6.414l2.293 2.293a1 1 0 11-1.414 1.414L5 6.414V8a1 1 0 01-2 0V4zm9 1a1 1 0 010-2h4a1 1 0 011 1v4a1 1 0 01-2 0V6.414l-2.293 2.293a1 1 0 11-1.414-1.414L13.586 5H12z'
+                    clipRule='evenodd'
+                  />
+                </svg>
+              )}
+            </button>
+          )}
+
+          {!isMobile && (
+            <button
+              onClick={toggleHelpOverlay}
+              className='text-white hover:text-blue-400'
+              title='Keyboard shortcuts (H)'
+              aria-label='Show keyboard shortcuts'
+            >
+              <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+                <path
+                  fillRule='evenodd'
+                  d='M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z'
+                  clipRule='evenodd'
+                />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Mobile-specific gesture hints */}
+      {isMobile && (
+        <div
+          className={`absolute top-1/2 left-4 transform -translate-y-1/2 z-10 transition-opacity duration-300 ${
+            showControls ? 'opacity-0' : 'opacity-60'
+          }`}
+        >
+          <div className='text-white text-xs bg-black bg-opacity-30 rounded px-2 py-1'>
+            ← Swipe →
+          </div>
+        </div>
+      )}
+
+      {/* Mobile fullscreen button (top right) */}
+      {isMobile && (
+        <div
+          className={`absolute top-4 right-4 z-20 transition-opacity duration-300 ${
+            showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          }`}
+        >
           <button
             onClick={toggleFullscreen}
-            className='text-white hover:text-blue-400'
+            className='text-white hover:text-blue-400 p-3 bg-black bg-opacity-50 rounded-full'
+            aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
           >
             {isFullscreen ? (
               <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
@@ -441,19 +634,16 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
             )}
           </button>
         </div>
-      </div>
-
-      {/* Keyboard shortcuts help */}
-      {!isMobile && showControls && (
-        <div className='absolute top-4 right-4 z-20 text-white text-sm opacity-70'>
-          <div className='bg-black bg-opacity-50 rounded px-3 py-2'>
-            <div>Space: Play/Pause</div>
-            <div>← →: Navigate</div>
-            <div>F: Fullscreen</div>
-            <div>H: Show controls</div>
-          </div>
-        </div>
       )}
+
+      {/* Gesture feedback component */}
+      <GestureFeedback ref={gestureFeedbackRef} />
+
+      {/* Help overlay for keyboard shortcuts */}
+      <HelpOverlay
+        isVisible={showHelpOverlay}
+        onClose={() => setShowHelpOverlay(false)}
+      />
     </div>
   );
 };
