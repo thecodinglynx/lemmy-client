@@ -1,11 +1,12 @@
 import React, { useEffect, useCallback, useState, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { useSlideshow } from '../../hooks/useSlideshow';
 import { useAppStore } from '../../stores/app-store';
 import { useKeyboardNavigation } from '../../hooks/use-keyboard-navigation';
 import { useTouchGestures } from '../../hooks/use-touch-gestures';
+import { useBatchPosts } from '../../hooks/useContent';
 import HelpOverlay from '../common/HelpOverlay';
 import { GestureFeedback, type GestureFeedbackRef } from './GestureFeedback';
-import { MediaType } from '../../types';
 import './gesture-feedback.css';
 
 interface SlideshowViewProps {
@@ -18,14 +19,18 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const gestureFeedbackRef = useRef<GestureFeedbackRef>(null);
+  const hasTriedInitialLoad = useRef(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [showHelpOverlay, setShowHelpOverlay] = useState(false);
+  const [progress, setProgress] = useState(0); // Progress percentage (0-100)
 
   // Store and hooks
   const slideshow = useSlideshow();
+  const batchPostsMutation = useBatchPosts();
   const {
     ui: { isMobile },
+    content: { selectedCommunities },
   } = useAppStore();
 
   // Current post data
@@ -191,123 +196,118 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     }
   }, [isMobile, showControlsTemporarily]);
 
-  // Load mock data for testing (TODO: Remove this and load real data)
+  // Load real data from Lemmy API - run once on mount only
   useEffect(() => {
-    if (hasContent) return; // Only load if no content exists
+    if (hasTriedInitialLoad.current) return; // Only run once
 
-    const mockPosts = [
-      {
-        id: '1',
-        postId: 1,
-        title: 'Beautiful Nature Scene',
-        url: 'https://picsum.photos/800/600?random=1',
-        mediaType: MediaType.IMAGE,
-        thumbnailUrl: 'https://picsum.photos/200/150?random=1',
-        creator: {
-          id: 1,
-          name: 'testuser',
-          display_name: 'Test User',
-          published: '2024-01-01T00:00:00Z',
-          avatar: undefined,
-          banned: false,
-          deleted: false,
-          actor_id: 'https://lemmy.world/u/testuser',
-          bio: undefined,
-          local: true,
-          banner: undefined,
-          updated: undefined,
-          inbox_url: 'https://lemmy.world/u/testuser/inbox',
-          shared_inbox_url: 'https://lemmy.world/inbox',
-          matrix_user_id: undefined,
-          admin: false,
-          bot_account: false,
-          ban_expires: undefined,
-        },
-        community: {
-          id: 1,
-          name: 'pics',
-          title: 'Pictures',
-          description: 'A community for pictures',
-          removed: false,
-          published: '2024-01-01T00:00:00Z',
-          updated: undefined,
-          deleted: false,
-          nsfw: false,
-          actor_id: 'https://lemmy.world/c/pics',
-          local: true,
-          icon: undefined,
-          banner: undefined,
-          followers_url: 'https://lemmy.world/c/pics/followers',
-          inbox_url: 'https://lemmy.world/c/pics/inbox',
-          shared_inbox_url: 'https://lemmy.world/inbox',
-          hidden: false,
-          posting_restricted_to_mods: false,
-          instance_id: 1,
-        },
-        score: 42,
-        published: '2024-01-15T10:30:00Z',
-        nsfw: false,
-        starred: false,
-        viewed: false,
-      },
-      {
-        id: '2',
-        postId: 2,
-        title: 'Amazing Sunset',
-        url: 'https://picsum.photos/800/600?random=2',
-        mediaType: MediaType.IMAGE,
-        thumbnailUrl: 'https://picsum.photos/200/150?random=2',
-        creator: {
-          id: 2,
-          name: 'photographer',
-          display_name: 'Photographer',
-          published: '2024-01-01T00:00:00Z',
-          avatar: undefined,
-          banned: false,
-          deleted: false,
-          actor_id: 'https://lemmy.world/u/photographer',
-          bio: undefined,
-          local: true,
-          banner: undefined,
-          updated: undefined,
-          inbox_url: 'https://lemmy.world/u/photographer/inbox',
-          shared_inbox_url: 'https://lemmy.world/inbox',
-          matrix_user_id: undefined,
-          admin: false,
-          bot_account: false,
-          ban_expires: undefined,
-        },
-        community: {
-          id: 1,
-          name: 'pics',
-          title: 'Pictures',
-          description: 'A community for pictures',
-          removed: false,
-          published: '2024-01-01T00:00:00Z',
-          updated: undefined,
-          deleted: false,
-          nsfw: false,
-          actor_id: 'https://lemmy.world/c/pics',
-          local: true,
-          icon: undefined,
-          banner: undefined,
-          followers_url: 'https://lemmy.world/c/pics/followers',
-          inbox_url: 'https://lemmy.world/c/pics/inbox',
-          shared_inbox_url: 'https://lemmy.world/inbox',
-          hidden: false,
-          posting_restricted_to_mods: false,
-          instance_id: 1,
-        },
-        score: 128,
-        published: '2024-01-16T14:20:00Z',
-        nsfw: false,
-        starred: false,
-        viewed: false,
-      },
-    ];
+    hasTriedInitialLoad.current = true;
 
-    slideshow.setPosts(mockPosts);
-  }, [hasContent, slideshow]);
+    // Get current posts to check if we need to load
+    const currentPosts = useAppStore.getState().slideshow.posts;
+
+    // Only load if no content exists
+    if (currentPosts && currentPosts.length > 0) return;
+
+    // If we have selected communities, load posts from them
+    if (selectedCommunities && selectedCommunities.length > 0) {
+      batchPostsMutation.mutate();
+    } else {
+      // If no communities selected, load from the "All" feed as a fallback
+      // This gives users some content to browse while they select communities
+      batchPostsMutation.mutate();
+    }
+  }, []); // Empty dependency array - run only once on mount
+
+  // Reload content when selected communities change
+  useEffect(() => {
+    // Skip initial mount (handled by initial load effect above)
+    if (!hasTriedInitialLoad.current) return;
+
+    // Clear existing posts before loading new ones
+    slideshow.resetSlideshow();
+
+    // Load content from updated communities
+    batchPostsMutation.mutate();
+  }, [selectedCommunities]); // Only depend on selectedCommunities
+
+  // Auto-start slideshow when content is available and auto-advance is enabled
+  useEffect(() => {
+    if (
+      hasContent &&
+      slideshow.slideshow.autoAdvance &&
+      !slideshow.slideshow.isPlaying
+    ) {
+      // Small delay to ensure content is fully loaded
+      const timer = setTimeout(() => {
+        slideshow.play();
+      }, 500);
+
+      return () => clearTimeout(timer);
+    }
+  }, [
+    hasContent,
+    slideshow.slideshow.autoAdvance,
+    slideshow.slideshow.isPlaying,
+    slideshow,
+  ]);
+
+  // Progress tracking for current slide
+  useEffect(() => {
+    let progressInterval: NodeJS.Timeout | null = null;
+    let startTime: number | null = null;
+
+    if (
+      slideshow.slideshow.isPlaying &&
+      slideshow.slideshow.autoAdvance &&
+      currentPost
+    ) {
+      const getCurrentTiming = () => {
+        switch (currentPost.mediaType) {
+          case 'video':
+            return slideshow.slideshow.timing.videos === 0
+              ? 0
+              : slideshow.slideshow.timing.videos * 1000;
+          case 'gif':
+            return slideshow.slideshow.timing.gifs * 1000;
+          case 'image':
+          default:
+            return slideshow.slideshow.timing.images * 1000;
+        }
+      };
+
+      const totalDuration = getCurrentTiming();
+
+      if (totalDuration > 0) {
+        startTime = Date.now();
+        setProgress(0);
+
+        progressInterval = setInterval(() => {
+          if (startTime !== null) {
+            const elapsed = Date.now() - startTime;
+            const progressPercent = Math.min(
+              (elapsed / totalDuration) * 100,
+              100
+            );
+            setProgress(progressPercent);
+          }
+        }, 100); // Update every 100ms for smooth animation
+      }
+    } else {
+      setProgress(0);
+    }
+
+    return () => {
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
+    };
+  }, [
+    slideshow.slideshow.isPlaying,
+    slideshow.slideshow.autoAdvance,
+    slideshow.slideshow.currentIndex,
+    slideshow.slideshow.timing,
+    currentPost,
+  ]);
 
   // Listen for help overlay toggle (H key)
 
@@ -339,9 +339,37 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
       >
         <div className='text-center text-white'>
           <h2 className='text-2xl font-bold mb-4'>No content available</h2>
+          <p className='text-gray-300 mb-2'>
+            Selected communities: {selectedCommunities.length}
+          </p>
+          <p className='text-gray-300 mb-2'>
+            Total posts: {slideshow.slideshow.posts?.length || 0}
+          </p>
+          <p className='text-gray-300 mb-2'>
+            Loading: {batchPostsMutation.isPending ? 'Yes' : 'No'}
+          </p>
+          <p className='text-gray-300 mb-2'>
+            Error:{' '}
+            {batchPostsMutation.error
+              ? String(batchPostsMutation.error)
+              : 'None'}
+          </p>
           <p className='text-gray-300 mb-6'>
             Select some communities or users to start the slideshow
           </p>
+          <Link
+            to='/settings'
+            className='inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors'
+          >
+            <svg className='w-5 h-5' fill='currentColor' viewBox='0 0 20 20'>
+              <path
+                fillRule='evenodd'
+                d='M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z'
+                clipRule='evenodd'
+              />
+            </svg>
+            Go to Settings
+          </Link>
         </div>
       </div>
     );
@@ -421,6 +449,24 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* Time Progress Bar */}
+      {slideshow.slideshow.isPlaying &&
+        slideshow.slideshow.autoAdvance &&
+        currentPost && (
+          <div
+            className={`absolute bottom-0 left-0 right-0 z-30 transition-opacity duration-300 ${
+              showControls || !isMobile ? 'opacity-100' : 'opacity-50'
+            }`}
+          >
+            <div className='h-0.5 bg-black bg-opacity-20'>
+              <div
+                className='h-full bg-white bg-opacity-60 transition-all duration-100 ease-linear shadow-sm'
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </div>
+        )}
 
       {/* Attribution overlay */}
       {currentPost && (
@@ -587,6 +633,23 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
               </svg>
             </button>
           )}
+
+          {!isMobile && (
+            <Link
+              to='/settings'
+              className='text-white hover:text-blue-400 transition-colors'
+              title='Settings (,)'
+              aria-label='Open settings'
+            >
+              <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+                <path
+                  fillRule='evenodd'
+                  d='M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z'
+                  clipRule='evenodd'
+                />
+              </svg>
+            </Link>
+          )}
         </div>
       </div>
 
@@ -603,13 +666,29 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
         </div>
       )}
 
-      {/* Mobile fullscreen button (top right) */}
+      {/* Mobile controls (top right) */}
       {isMobile && (
         <div
           className={`absolute top-4 right-4 z-20 transition-opacity duration-300 ${
             showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
-          }`}
+          } flex flex-col gap-2`}
         >
+          {/* Settings button */}
+          <Link
+            to='/settings'
+            className='text-white hover:text-blue-400 p-3 bg-black bg-opacity-50 rounded-full'
+            aria-label='Settings'
+          >
+            <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+              <path
+                fillRule='evenodd'
+                d='M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z'
+                clipRule='evenodd'
+              />
+            </svg>
+          </Link>
+
+          {/* Fullscreen button */}
           <button
             onClick={toggleFullscreen}
             className='text-white hover:text-blue-400 p-3 bg-black bg-opacity-50 rounded-full'

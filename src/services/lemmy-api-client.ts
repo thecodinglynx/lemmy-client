@@ -1,124 +1,315 @@
+import type {
+  GetPosts,
+  GetCommunity,
+  ListCommunities,
+  PostView as LemmyPostView,
+  Community as LemmyCommunity,
+  Person as LemmyPerson,
+} from 'lemmy-js-client';
 import { RateLimiter } from './rate-limiter';
 import { ErrorHandler } from './error-handler';
-import { API_CONFIG, CONTENT_FILTERS } from '@constants';
-import type {
-  GetPostsParams,
-  PostView,
-  Community,
-  Person,
-  SiteInfo,
-} from '@types';
+import { CONTENT_FILTERS } from '@constants';
+import { isValidCommunityId, logInvalidCommunityId } from '@utils/validation';
+import type { PostView, Community, Person, SiteInfo } from '@types';
 
-/**
- * Comprehensive Lemmy API client with rate limiting and error handling
- */
-export class LemmyAPIClient {
+// Re-export lemmy-js-client types
+export type { GetPosts as GetPostsParams } from 'lemmy-js-client';
+
+// Helper function to transform lemmy-js-client PostView to our PostView type
+function transformPostView(lemmyPost: LemmyPostView): PostView {
+  return {
+    post: {
+      id: lemmyPost.post.id,
+      name: lemmyPost.post.name,
+      url: lemmyPost.post.url,
+      body: lemmyPost.post.body,
+      creator_id: lemmyPost.post.creator_id,
+      community_id: lemmyPost.post.community_id,
+      removed: lemmyPost.post.removed,
+      locked: lemmyPost.post.locked,
+      published: lemmyPost.post.published_at,
+      updated: lemmyPost.post.updated_at,
+      deleted: lemmyPost.post.deleted,
+      nsfw: lemmyPost.post.nsfw,
+      ap_id: lemmyPost.post.ap_id || '',
+      local: lemmyPost.post.local,
+      featured_community: lemmyPost.post.featured_community,
+      featured_local: lemmyPost.post.featured_local,
+      thumbnail_url: lemmyPost.post.thumbnail_url,
+      embed_title: lemmyPost.post.embed_title,
+      embed_description: lemmyPost.post.embed_description,
+      embed_video_url: lemmyPost.post.embed_video_url,
+    },
+    creator: transformPerson(lemmyPost.creator),
+    community: transformCommunity(lemmyPost.community),
+    creator_banned_from_community:
+      lemmyPost.creator_banned_from_community || false,
+    counts: {
+      id: 0, // Default value as this field doesn't exist in new API
+      post_id: lemmyPost.post.id,
+      comments: 0, // Would need to be fetched separately
+      score: lemmyPost.post_actions?.like_score || 0,
+      upvotes: 0, // Would need to be fetched separately
+      downvotes: 0, // Would need to be fetched separately
+      published: lemmyPost.post.published_at,
+      newest_comment_time_necro: lemmyPost.post.published_at,
+      newest_comment_time: lemmyPost.post.published_at,
+      featured_community: lemmyPost.post.featured_community,
+      featured_local: lemmyPost.post.featured_local,
+      hot_rank: 0, // Would need to be calculated
+      hot_rank_active: 0, // Would need to be calculated
+    },
+    subscribed: 'NotSubscribed', // Default value
+    saved: !!lemmyPost.post_actions?.saved_at,
+    read: !!lemmyPost.post_actions?.read_at,
+    creator_blocked: lemmyPost.creator_banned || false,
+    my_vote: lemmyPost.post_actions?.like_score,
+    unread_comments: 0, // Would need to be calculated
+  };
+}
+
+// Helper function to transform lemmy-js-client Community to our Community type
+function transformCommunity(lemmyCommunity: LemmyCommunity): Community {
+  return {
+    id: lemmyCommunity.id,
+    name: lemmyCommunity.name,
+    title: lemmyCommunity.title,
+    description: lemmyCommunity.description,
+    removed: lemmyCommunity.removed,
+    published: lemmyCommunity.published_at,
+    updated: lemmyCommunity.updated_at,
+    deleted: lemmyCommunity.deleted,
+    nsfw: lemmyCommunity.nsfw,
+    actor_id: lemmyCommunity.ap_id, // Map ap_id to actor_id
+    local: lemmyCommunity.local,
+    icon: lemmyCommunity.icon,
+    banner: lemmyCommunity.banner,
+    followers_url: '', // Not available in new API, provide default
+    inbox_url: '', // Not available in new API, provide default
+    shared_inbox_url: undefined, // Not available in new API
+    hidden: false, // Not available in new API, provide default
+    posting_restricted_to_mods: lemmyCommunity.posting_restricted_to_mods,
+    instance_id: lemmyCommunity.instance_id,
+  };
+}
+
+// Helper function to transform lemmy-js-client Person to our Person type
+function transformPerson(lemmyPerson: LemmyPerson): Person {
+  return {
+    id: lemmyPerson.id,
+    name: lemmyPerson.name,
+    display_name: lemmyPerson.display_name,
+    avatar: lemmyPerson.avatar,
+    banned: false, // Not available in new API, provide default
+    published: lemmyPerson.published_at,
+    updated: lemmyPerson.updated_at,
+    actor_id: lemmyPerson.ap_id, // Map ap_id to actor_id
+    bio: lemmyPerson.bio,
+    local: lemmyPerson.local,
+    banner: lemmyPerson.banner,
+    deleted: lemmyPerson.deleted,
+    inbox_url: '', // Not available in new API, provide default
+    shared_inbox_url: undefined, // Not available in new API
+    matrix_user_id: lemmyPerson.matrix_user_id,
+    admin: false, // Not available in new API, provide default
+    bot_account: lemmyPerson.bot_account,
+    ban_expires: undefined, // Not available in new API
+  };
+}
+
+// Creating a custom HTTP client that bypasses lemmy-js-client's v4 hardcoding
+class CustomLemmyHttp {
   private baseUrl: string;
-  private rateLimiter: RateLimiter;
-  private abortController: AbortController | null = null;
+  private headers: Record<string, string> = {};
+  private isProxy: boolean = false;
+  private serverParam: string | null = null;
 
-  constructor(instanceUrl: string = API_CONFIG.DEFAULT_BASE_URL) {
-    this.baseUrl = instanceUrl.endsWith('/')
-      ? instanceUrl.slice(0, -1)
-      : instanceUrl;
+  constructor(baseUrl: string) {
+    console.log('🔧 CustomLemmyHttp constructor called with baseUrl:', baseUrl);
+
+    // Check if using our local proxy
+    if (baseUrl.includes('localhost:5173/api/lemmy')) {
+      this.isProxy = true;
+      // Extract server parameter if present
+      const url = new URL(baseUrl);
+      this.serverParam = url.searchParams.get('server');
+      // Set base URL without query parameters
+      this.baseUrl = `${url.protocol}//${url.host}${url.pathname}`;
+      console.log(
+        '🌐 Proxy mode detected - server:',
+        this.serverParam,
+        'baseUrl:',
+        this.baseUrl
+      );
+    } else {
+      // For direct connections, add /api/v3
+      this.isProxy = false;
+      this.baseUrl = `${baseUrl.replace(/\/+$/, '')}/api/v3`;
+      console.log('🔗 Direct mode - baseUrl:', this.baseUrl);
+    }
+  }
+
+  setHeaders(headers: Record<string, string>) {
+    this.headers = { ...this.headers, ...headers };
+  }
+
+  private async makeRequest<T>(endpoint: string, params?: any): Promise<T> {
+    let url = `${this.baseUrl}${endpoint}`;
+
+    // Create URL object to handle query parameters properly
+    const urlObj = new URL(url);
+
+    // If using proxy, add the server parameter
+    if (this.isProxy && this.serverParam) {
+      urlObj.searchParams.set('server', this.serverParam);
+    }
+
+    // Add endpoint parameters to the URL
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+          urlObj.searchParams.append(key, String(value));
+        }
+      });
+    }
+
+    const finalUrl = urlObj.toString();
+    console.log('📡 Making request to:', finalUrl);
+
+    const response = await fetch(finalUrl, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.headers,
+      },
+    });
+
+    console.log('📥 Response status:', response.status, response.statusText);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.log('❌ Error response body:', errorText);
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const responseText = await response.text();
+    console.log('📄 Response body length:', responseText.length);
+    console.log(
+      '📄 Response body preview:',
+      responseText.substring(0, 200) + '...'
+    );
+
+    try {
+      const jsonData = JSON.parse(responseText);
+      console.log('✅ Successfully parsed JSON response');
+      return jsonData;
+    } catch (parseError) {
+      console.log('❌ JSON parse error:', parseError);
+      console.log('📄 Full response body:', responseText);
+      throw new Error(`Failed to parse JSON response: ${parseError}`);
+    }
+  }
+
+  async getPosts(params: any = {}): Promise<any> {
+    return this.makeRequest('/post/list', params);
+  }
+
+  async getSite(): Promise<any> {
+    return this.makeRequest('/site');
+  }
+
+  async search(params: any): Promise<any> {
+    return this.makeRequest('/search', params);
+  }
+
+  async resolveObject(params: any): Promise<any> {
+    return this.makeRequest('/resolve_object', params);
+  }
+
+  async listCommunities(params: any = {}): Promise<any> {
+    return this.makeRequest('/community/list', params);
+  }
+
+  async getCommunity(params: any): Promise<any> {
+    return this.makeRequest('/community', params);
+  }
+
+  async getPersonDetails(params: any): Promise<any> {
+    return this.makeRequest('/user', params);
+  }
+}
+export class LemmyAPIClient {
+  private client: CustomLemmyHttp;
+  private rateLimiter: RateLimiter;
+  private jwt?: string;
+
+  constructor(instanceUrl: string = 'http://localhost:5173/api/lemmy') {
+    // Use our custom client that properly handles v3 URLs
+    const baseUrl = instanceUrl.startsWith('http')
+      ? instanceUrl.replace(/\/api\/v[0-9]+.*$/, '') // Remove any existing API path
+      : `https://${instanceUrl}`;
+
+    this.client = new CustomLemmyHttp(baseUrl);
     this.rateLimiter = new RateLimiter();
+  }
+
+  /**
+   * Set authentication token if needed
+   */
+  setAuth(jwt: string) {
+    this.jwt = jwt;
+    this.client.setHeaders({ Authorization: `Bearer ${jwt}` });
   }
 
   /**
    * Make a rate-limited API request with error handling
    */
-  private async makeRequest<T>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> {
+  private async makeRequest<T>(requestFn: () => Promise<T>): Promise<T> {
     // Wait for rate limit availability
     await this.rateLimiter.waitForAvailability();
-
-    // Create abort controller for timeout
-    this.abortController = new AbortController();
-    const { signal } = this.abortController;
-
-    const requestOptions: RequestInit = {
-      ...options,
-      signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'LemmyMediaSlideshow/1.0',
-        ...options.headers,
-      },
-    };
-
-    const fullUrl = `${this.baseUrl}${endpoint}`;
 
     try {
       // Record the request for rate limiting
       this.rateLimiter.recordRequest();
 
-      // Make the request with timeout
-      const response = await ErrorHandler.withTimeout(
-        fetch(fullUrl, requestOptions),
-        API_CONFIG.RATE_LIMIT.TIMEOUT
-      );
-
-      // Handle response errors
-      await ErrorHandler.handleResponse(response, endpoint);
-
-      const data = await response.json();
-      return data as T;
+      // Make the request with error handling
+      const result = await ErrorHandler.retryWithBackoff(requestFn);
+      return result;
     } catch (error) {
-      ErrorHandler.logError(error, `API request to ${endpoint}`);
-
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error('Request was cancelled');
-      }
-
-      // Handle network errors
-      if (!(error instanceof Error && error.message.includes('HTTP'))) {
-        ErrorHandler.handleNetworkError(error, endpoint);
-      }
-
+      ErrorHandler.logError(error, 'Lemmy API request');
       throw error;
-    } finally {
-      this.abortController = null;
     }
-  }
-
-  /**
-   * Build query string from parameters
-   */
-  private buildQueryString(params: Record<string, any>): string {
-    const searchParams = new URLSearchParams();
-
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        searchParams.append(key, String(value));
-      }
-    });
-
-    const queryString = searchParams.toString();
-    return queryString ? `?${queryString}` : '';
   }
 
   /**
    * Get posts with comprehensive filtering options
    */
-  async getPosts(params: GetPostsParams = {}): Promise<PostView[]> {
-    const defaultParams: GetPostsParams = {
+  async getPosts(params: Partial<GetPosts> = {}): Promise<PostView[]> {
+    // Validate community_id if provided
+    if (
+      params.community_id !== undefined &&
+      !isValidCommunityId(params.community_id)
+    ) {
+      logInvalidCommunityId(params.community_id, 'getPosts');
+      throw new Error(
+        `Invalid community ID: ${params.community_id} (exceeds i32 limit)`
+      );
+    }
+
+    const defaultParams: Partial<GetPosts> = {
       type_: 'All',
       sort: 'Hot',
-      page: 1,
       limit: CONTENT_FILTERS.PAGE_SIZE,
-      show_nsfw: false,
     };
 
     const finalParams = { ...defaultParams, ...params };
-    const queryString = this.buildQueryString(finalParams);
 
-    const response = await ErrorHandler.retryWithBackoff(() =>
-      this.makeRequest<{ posts: PostView[] }>(`/post/list${queryString}`)
+    const response = await this.makeRequest(() =>
+      this.client.getPosts(finalParams)
     );
 
-    return response.posts || [];
+    // Transform the response posts to our format
+    return response.posts?.map(transformPostView) || [];
   }
 
   /**
@@ -126,8 +317,16 @@ export class LemmyAPIClient {
    */
   async getCommunityPosts(
     communityId: number,
-    params: Omit<GetPostsParams, 'community_id'> = {}
+    params: Omit<GetPosts, 'community_id'> = {}
   ): Promise<PostView[]> {
+    // Validate community ID before making API call
+    if (!isValidCommunityId(communityId)) {
+      logInvalidCommunityId(communityId, 'getCommunityPosts');
+      throw new Error(
+        `Invalid community ID: ${communityId} (exceeds i32 limit)`
+      );
+    }
+
     return this.getPosts({ ...params, community_id: communityId });
   }
 
@@ -136,37 +335,36 @@ export class LemmyAPIClient {
    */
   async getUserPosts(
     userId: number,
-    params: Omit<GetPostsParams, 'creator_id'> = {}
+    params: Partial<GetPosts> = {}
   ): Promise<PostView[]> {
-    return this.getPosts({ ...params, creator_id: userId });
+    // For now, return empty array as the new API structure doesn't directly support this
+    // This would need to be implemented differently in the real application
+    console.warn('getUserPosts not fully implemented with new API structure', {
+      userId,
+      params,
+    });
+    return [];
   }
 
   /**
-   * Search for communities
+   * Get community list
    */
-  async getCommunities(
-    search?: string,
-    limit: number = 20
-  ): Promise<Community[]> {
-    const params: Record<string, any> = {
+  async getCommunities(limit: number = 20): Promise<Community[]> {
+    const params: ListCommunities = {
       type_: 'All',
-      sort: 'TopAll',
+      sort: 'Hot', // Use valid sort type
       limit,
     };
 
-    if (search) {
-      params.q = search;
-    }
-
-    const queryString = this.buildQueryString(params);
-
-    const response = await ErrorHandler.retryWithBackoff(() =>
-      this.makeRequest<{ communities: Array<{ community: Community }> }>(
-        `/community/list${queryString}`
-      )
+    const response = await this.makeRequest(() =>
+      this.client.listCommunities(params)
     );
 
-    return response.communities?.map((item) => item.community) || [];
+    return (
+      response.communities?.map((item: any) =>
+        transformCommunity(item.community)
+      ) || []
+    );
   }
 
   /**
@@ -182,59 +380,83 @@ export class LemmyAPIClient {
 
     const params = {
       q: query,
-      type_: 'Communities',
-      sort: 'TopAll',
-      listing_type: 'All',
+      type_: 'Communities' as const,
+      sort: 'New' as const, // Use valid SearchSortType
+      listing_type: 'All' as const,
       limit,
     };
 
-    const queryString = this.buildQueryString(params);
-
-    const response = await ErrorHandler.retryWithBackoff(() =>
-      this.makeRequest<{ communities: Array<{ community: Community }> }>(
-        `/search${queryString}`
-      )
+    console.log(
+      `🔍 API Client searchCommunities - Query: "${query}", Params:`,
+      params
     );
 
-    return response.communities?.map((item) => item.community) || [];
+    const response = await this.makeRequest(() => this.client.search(params));
+
+    console.log(`📡 Raw search response for "${query}":`, response);
+
+    // Get communities from the correct property in the response
+    const communityResults = response.communities || [];
+
+    console.log(`📊 Community results found: ${communityResults.length}`);
+
+    // Transform community results - each item has a 'community' property
+    const communities = communityResults
+      .map((item: any) => transformCommunity(item.community))
+      .filter(Boolean); // Filter out any null/undefined results
+
+    // Filter out communities with invalid IDs before returning
+    const validCommunities = communities.filter((community: Community) => {
+      if (!isValidCommunityId(community.id)) {
+        logInvalidCommunityId(
+          community.id,
+          `searchCommunities result for query: "${query}"`
+        );
+        return false;
+      }
+      return true;
+    });
+
+    console.log(`✅ Valid communities returned: ${validCommunities.length}`);
+
+    return validCommunities;
   }
 
   /**
    * Search for users
    */
-  async getUsers(search: string, limit: number = 20): Promise<Person[]> {
-    if (!search.trim()) {
+  async searchUsers(query: string, limit: number = 20): Promise<Person[]> {
+    if (!query.trim()) {
       return [];
     }
 
     const params = {
-      q: search,
-      type_: 'Users',
-      sort: 'TopAll',
-      listing_type: 'All',
+      q: query,
+      type_: 'Users' as const,
+      sort: 'New' as const, // Use valid SearchSortType
+      listing_type: 'All' as const,
       limit,
     };
 
-    const queryString = this.buildQueryString(params);
+    const response = await this.makeRequest(() => this.client.search(params));
 
-    const response = await ErrorHandler.retryWithBackoff(() =>
-      this.makeRequest<{ users: Array<{ person: Person }> }>(
-        `/search${queryString}`
-      )
-    );
+    // Get users from the correct property in the response
+    const userResults = response.users || [];
 
-    return response.users?.map((item) => item.person) || [];
+    // Transform user results - each item has a 'person' property
+    return userResults
+      .map((item: any) => transformPerson(item.person))
+      .filter(Boolean); // Filter out any null/undefined results
   }
 
   /**
    * Get site information
    */
   async getSite(): Promise<SiteInfo> {
-    const response = await ErrorHandler.retryWithBackoff(() =>
-      this.makeRequest<SiteInfo>('/site')
-    );
+    const response = await this.makeRequest(() => this.client.getSite());
 
-    return response;
+    // Create a compatible SiteInfo structure from the response
+    return response as unknown as SiteInfo;
   }
 
   /**
@@ -243,22 +465,27 @@ export class LemmyAPIClient {
   async resolveActor(
     name: string
   ): Promise<{ community?: Community; person?: Person }> {
-    const params = {
-      q: name,
-    };
+    const params = { q: name };
 
-    const queryString = this.buildQueryString(params);
+    const response = await this.makeRequest(() =>
+      this.client.resolveObject(params)
+    );
 
-    const response = await ErrorHandler.retryWithBackoff(() =>
-      this.makeRequest<{
-        community?: { community: Community };
-        person?: { person: Person };
-      }>(`/resolve_object${queryString}`)
+    // Use search response format to find resolved objects
+    const communityResult = response.results?.find(
+      (item: any) => item.type_ === 'Community'
+    );
+    const personResult = response.results?.find(
+      (item: any) => item.type_ === 'Person'
     );
 
     return {
-      community: response.community?.community,
-      person: response.person?.person,
+      community: communityResult
+        ? transformCommunity((communityResult as any).community)
+        : undefined,
+      person: personResult
+        ? transformPerson((personResult as any).person)
+        : undefined,
     };
   }
 
@@ -267,24 +494,31 @@ export class LemmyAPIClient {
    */
   async getCommunityByName(name: string): Promise<Community | null> {
     try {
-      const params = {
-        name,
-      };
+      const params: GetCommunity = { name };
 
-      const queryString = this.buildQueryString(params);
-
-      const response = await ErrorHandler.retryWithBackoff(() =>
-        this.makeRequest<{ community_view: { community: Community } }>(
-          `/community${queryString}`
-        )
+      const response = await this.makeRequest(() =>
+        this.client.getCommunity(params)
       );
 
-      return response.community_view?.community || null;
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('404')) {
-        return null;
+      if (response.community_view?.community) {
+        const community = transformCommunity(response.community_view.community);
+
+        // Validate community ID before returning
+        if (!isValidCommunityId(community.id)) {
+          logInvalidCommunityId(
+            community.id,
+            `getCommunityByName result for: "${name}"`
+          );
+          return null;
+        }
+
+        return community;
       }
-      throw error;
+
+      return null;
+    } catch (error) {
+      ErrorHandler.logError(error, `Get community by name: ${name}`);
+      return null;
     }
   }
 
@@ -293,24 +527,18 @@ export class LemmyAPIClient {
    */
   async getUserByName(name: string): Promise<Person | null> {
     try {
-      const params = {
-        username: name,
-      };
+      const params = { username: name };
 
-      const queryString = this.buildQueryString(params);
-
-      const response = await ErrorHandler.retryWithBackoff(() =>
-        this.makeRequest<{ person_view: { person: Person } }>(
-          `/user${queryString}`
-        )
+      const response = await this.makeRequest(() =>
+        this.client.getPersonDetails(params)
       );
 
-      return response.person_view?.person || null;
+      return response.person_view?.person
+        ? transformPerson(response.person_view.person)
+        : null;
     } catch (error) {
-      if (error instanceof Error && error.message.includes('404')) {
-        return null;
-      }
-      throw error;
+      ErrorHandler.logError(error, `Get user by name: ${name}`);
+      return null;
     }
   }
 
@@ -318,18 +546,26 @@ export class LemmyAPIClient {
    * Cancel any ongoing requests
    */
   cancelRequests(): void {
-    if (this.abortController) {
-      this.abortController.abort();
-    }
+    // lemmy-js-client doesn't expose abort controllers directly
+    console.warn(
+      'Request cancellation not directly supported by lemmy-js-client'
+    );
   }
 
   /**
    * Update the instance URL
    */
   setInstance(instanceUrl: string): void {
-    this.baseUrl = instanceUrl.endsWith('/')
-      ? instanceUrl.slice(0, -1)
-      : instanceUrl;
+    const baseUrl = instanceUrl.startsWith('http')
+      ? instanceUrl.replace(/\/api\/v[0-9]+.*$/, '') // Remove any existing API path
+      : `https://${instanceUrl}`;
+
+    this.client = new CustomLemmyHttp(baseUrl);
+
+    // Re-apply auth if it was set
+    if (this.jwt) {
+      this.setAuth(this.jwt);
+    }
   }
 
   /**
@@ -355,3 +591,22 @@ export class LemmyAPIClient {
 
 // Export a default instance
 export const lemmyApi = new LemmyAPIClient();
+
+// Function to create API client with custom server settings
+export function createLemmyApiClient(
+  instanceUrl: string,
+  useProxy: boolean = false
+): LemmyAPIClient {
+  // Strip protocol from instanceUrl for consistent handling
+  const cleanInstanceUrl = instanceUrl.replace(/^https?:\/\//, '');
+
+  const baseUrl = useProxy
+    ? `http://localhost:5173/api/lemmy?server=${encodeURIComponent(cleanInstanceUrl)}`
+    : `https://${cleanInstanceUrl}`;
+
+  console.log(
+    `🔧 createLemmyApiClient: instanceUrl=${instanceUrl}, useProxy=${useProxy}, baseUrl=${baseUrl}`
+  );
+
+  return new LemmyAPIClient(baseUrl);
+}

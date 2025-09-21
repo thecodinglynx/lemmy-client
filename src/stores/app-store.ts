@@ -41,8 +41,15 @@ const initialContentState: ContentState = {
   selectedUsers: [],
   filters: {
     mediaTypes: ['image', 'video', 'gif'] as MediaType[],
-    showNSFW: false,
+    showNSFW: false, // User can now control this via UI
     minScore: 0,
+    keywords: [],
+    excludeKeywords: [],
+    preset: 'default',
+    quality: {
+      enabled: false,
+      threshold: 0.5,
+    },
   },
   queue: [],
   viewedPosts: new Set(),
@@ -57,6 +64,10 @@ const initialSettingsState: SettingsState = {
     images: 10,
     videos: 0,
     gifs: 15,
+  },
+  server: {
+    instanceUrl: 'https://lemmy.world',
+    customProxy: false,
   },
   accessibility: {
     highContrast: false,
@@ -86,6 +97,12 @@ const initialSettingsState: SettingsState = {
     touchGestures: true,
     autoHideControls: true,
     controlTimeout: 3000,
+  },
+  performance: {
+    enablePreloading: true,
+    preloadCount: 3,
+    enableVirtualScrolling: false,
+    maxCacheSize: 100,
   },
 };
 
@@ -417,6 +434,24 @@ export const useAppStore = create<AppStore>()(
         rehydrate: () => {
           // This will be called after the store is rehydrated from storage
           set((state) => {
+            // Ensure server settings exist with defaults
+            if (!state.settings.server) {
+              state.settings.server = {
+                instanceUrl: 'https://lemmy.world',
+                customProxy: false,
+              };
+            }
+
+            // Ensure performance settings exist with defaults
+            if (!state.settings.performance) {
+              state.settings.performance = {
+                enablePreloading: true,
+                preloadCount: 3,
+                enableVirtualScrolling: false,
+                maxCacheSize: 100,
+              };
+            }
+
             // Ensure content state has all required fields
             if (!state.content.viewedPosts) {
               state.content.viewedPosts = new Set();

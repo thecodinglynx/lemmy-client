@@ -240,6 +240,13 @@ export interface ContentState {
     mediaTypes: MediaType[];
     showNSFW: boolean;
     minScore: number;
+    keywords: string[];
+    excludeKeywords: string[];
+    preset: string;
+    quality: {
+      enabled: boolean;
+      threshold: number;
+    };
     dateRange?: {
       start: Date;
       end: Date;
@@ -259,6 +266,10 @@ export interface SettingsState {
     videos: number;
     gifs: number;
   };
+  server: {
+    instanceUrl: string;
+    customProxy: boolean;
+  };
   accessibility: {
     highContrast: boolean;
     reducedMotion: boolean;
@@ -277,6 +288,12 @@ export interface SettingsState {
     autoHideControls: boolean;
     controlTimeout: number; // seconds
     timingPresets?: Record<string, number>;
+  };
+  performance: {
+    enablePreloading: boolean;
+    preloadCount: number;
+    enableVirtualScrolling: boolean;
+    maxCacheSize: number;
   };
 }
 
