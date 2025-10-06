@@ -130,9 +130,34 @@ export function useTouchGestures(
     [finalConfig]
   );
 
+  // Helper function to check if touch target is an interactive element
+  const isInteractiveElement = useCallback(
+    (target: EventTarget | null): boolean => {
+      if (!target || !(target instanceof Element)) return false;
+
+      const tagName = target.tagName.toLowerCase();
+      const interactiveTags = ['button', 'a', 'input', 'select', 'textarea'];
+
+      // Check if it's a direct interactive element
+      if (interactiveTags.includes(tagName)) return true;
+
+      // Check if it's inside an interactive element (like SVG inside a button)
+      const closestInteractive = target.closest(
+        'button, a, input, select, textarea'
+      );
+      return !!closestInteractive;
+    },
+    []
+  );
+
   // Touch event handlers
   const handleTouchStart = useCallback(
     (event: TouchEvent) => {
+      // Skip gesture handling for interactive elements
+      if (isInteractiveElement(event.target)) {
+        return;
+      }
+
       if (event.touches.length > 1) {
         // Multi-touch - cancel any ongoing gesture
         if (longPressTimer.current) {
@@ -156,11 +181,16 @@ export function useTouchGestures(
         }, 500); // Long press threshold: 500ms
       }
     },
-    [getTouchPoint, callbacks.onLongPress]
+    [getTouchPoint, callbacks.onLongPress, isInteractiveElement]
   );
 
   const handleTouchMove = useCallback(
     (event: TouchEvent) => {
+      // Skip gesture handling for interactive elements
+      if (isInteractiveElement(event.target)) {
+        return;
+      }
+
       if (
         !touchStart.current ||
         !isTouching.current ||
@@ -189,11 +219,16 @@ export function useTouchGestures(
         event.preventDefault();
       }
     },
-    [getTouchPoint, finalConfig]
+    [getTouchPoint, finalConfig, isInteractiveElement]
   );
 
   const handleTouchEnd = useCallback(
     (event: TouchEvent) => {
+      // Skip gesture handling for interactive elements
+      if (isInteractiveElement(event.target)) {
+        return;
+      }
+
       if (!touchStart.current || !isTouching.current) {
         return;
       }
@@ -228,6 +263,7 @@ export function useTouchGestures(
       isTap,
       callbacks.onTap,
       finalConfig.preventDefaultOnSwipe,
+      isInteractiveElement,
     ]
   );
 

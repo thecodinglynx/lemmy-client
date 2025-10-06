@@ -10,7 +10,34 @@ export default defineConfig({
     {
       name: 'dynamic-lemmy-proxy',
       configureServer(server) {
+        // Handle Lemmy API proxying
         server.middlewares.use('/api/lemmy', async (req, res) => {
+          const start = Date.now();
+          const attemptFetch = async (targetUrl: string, attempt: number) => {
+            try {
+              const response = await fetch(targetUrl, {
+                method: req.method || 'GET',
+                headers: {
+                  Accept: 'application/json',
+                  'User-Agent': req.headers['user-agent'] || 'Lemmy Client',
+                },
+              });
+              return response;
+            } catch (err: any) {
+              const dnsError =
+                err?.code === 'ENOTFOUND' ||
+                /ENOTFOUND|EAI_AGAIN/.test(err?.message || '');
+              if (dnsError && attempt < 2) {
+                const delay = 150 * Math.pow(2, attempt);
+                console.warn(
+                  `🌐 DNS lookup failed (attempt ${attempt + 1}) for ${targetUrl}. Retrying in ${delay}ms`
+                );
+                await new Promise((r) => setTimeout(r, delay));
+                return attemptFetch(targetUrl, attempt + 1);
+              }
+              throw err;
+            }
+          };
           try {
             const url = new URL(req.url!, `http://${req.headers.host}`);
             const targetServer =
@@ -31,15 +58,7 @@ export default defineConfig({
             console.log(`🔄 Proxying ${req.method} ${req.url} → ${targetUrl}`);
 
             // Forward the request to the target server
-            const response = await fetch(targetUrl, {
-              method: req.method || 'GET',
-              headers: {
-                Accept: 'application/json',
-                'User-Agent': req.headers['user-agent'] || 'Lemmy Client',
-                // Remove Accept-Encoding to prevent compression issues
-                // Let the fetch API handle decompression automatically
-              },
-            });
+            const response = await attemptFetch(targetUrl, 0);
 
             console.log(`📥 Response from ${targetServer}: ${response.status}`);
             console.log(
@@ -93,13 +112,104 @@ export default defineConfig({
             }
 
             res.end(body);
-          } catch (error) {
+          } catch (error: any) {
             console.error('🚨 Proxy error:', error);
+            const isDns =
+              error?.code === 'ENOTFOUND' ||
+              /ENOTFOUND|EAI_AGAIN/.test(error?.message || '');
+            res.statusCode = isDns ? 502 : 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(
+              JSON.stringify({
+                error: 'Proxy error',
+                message: error?.message || String(error),
+                code:
+                  error?.code || (isDns ? 'DNS_RESOLUTION_FAILED' : 'UNKNOWN'),
+                elapsedMs: Date.now() - start,
+              })
+            );
+          }
+        });
+
+        // Handle media proxying for CORS
+        server.middlewares.use('/api/media', async (req, res) => {
+          try {
+            const url = new URL(req.url!, `http://${req.headers.host}`);
+            const targetUrl = url.searchParams.get('url');
+
+            if (!targetUrl) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: 'Missing url parameter' }));
+              return;
+            }
+
+            console.log(`🖼️ Proxying media: ${targetUrl}`);
+
+            // Forward the request to the target media URL
+            const response = await fetch(targetUrl, {
+              method: 'GET',
+              headers: {
+                'User-Agent': req.headers['user-agent'] || 'Lemmy Client',
+                // Forward relevant headers
+                Accept: req.headers['accept'] || '*/*',
+                Referer: new URL(targetUrl).origin,
+              },
+            });
+
+            console.log(
+              `📥 Media response: ${response.status} for ${targetUrl}`
+            );
+
+            // Set CORS headers
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+            res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+            // Copy media-specific headers
+            const contentType = response.headers.get('content-type');
+            const contentLength = response.headers.get('content-length');
+            const cacheControl = response.headers.get('cache-control');
+            const lastModified = response.headers.get('last-modified');
+            const etag = response.headers.get('etag');
+
+            if (contentType) res.setHeader('Content-Type', contentType);
+            if (contentLength) res.setHeader('Content-Length', contentLength);
+            if (cacheControl) res.setHeader('Cache-Control', cacheControl);
+            if (lastModified) res.setHeader('Last-Modified', lastModified);
+            if (etag) res.setHeader('ETag', etag);
+
+            res.statusCode = response.status;
+
+            // Stream the media content
+            if (response.body) {
+              // Convert web ReadableStream to Node.js readable stream
+              const reader = response.body.getReader();
+              const pump = async () => {
+                try {
+                  while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    res.write(value);
+                  }
+                  res.end();
+                } catch (error) {
+                  console.error('🚨 Stream error:', error);
+                  res.end();
+                }
+              };
+              pump();
+            } else {
+              const buffer = await response.arrayBuffer();
+              res.end(Buffer.from(buffer));
+            }
+          } catch (error) {
+            console.error('🚨 Media proxy error:', error);
             res.statusCode = 500;
             res.setHeader('Content-Type', 'application/json');
             res.end(
               JSON.stringify({
-                error: 'Proxy error: ' + (error as Error).message,
+                error: 'Media proxy error: ' + (error as Error).message,
               })
             );
           }

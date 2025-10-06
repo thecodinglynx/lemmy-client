@@ -256,6 +256,12 @@ export interface ContentState {
   viewedPosts: Set<string>;
   currentBatch: number;
   hasMore: boolean;
+  // Pagination cursors for different communities
+  paginationCursors: Record<string, string>; // communityId -> cursor
+  // Global cursor for "All" feed
+  globalCursor?: string;
+  // User liked posts (by post id -> SlideshowPost snapshot)
+  likedPosts?: Record<string, SlideshowPost & { likedAt: number }>;
 }
 
 export interface SettingsState {
@@ -281,6 +287,8 @@ export interface SettingsState {
     showControls: boolean;
     fullscreenDefault: boolean;
     attributionPosition: 'top' | 'bottom' | 'overlay';
+    // Keep the device screen awake while slideshow is playing (Wake Lock API)
+    keepScreenAwake?: boolean;
   };
   controls: {
     keyboardShortcuts: Record<string, string>;
@@ -295,6 +303,8 @@ export interface SettingsState {
     enableVirtualScrolling: boolean;
     maxCacheSize: number;
   };
+  // Source for slideshow content: feed from selected communities or liked posts library
+  contentSource?: 'feed' | 'liked';
 }
 
 export interface UIState {

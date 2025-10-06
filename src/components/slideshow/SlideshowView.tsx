@@ -4,7 +4,9 @@ import { useSlideshow } from '../../hooks/useSlideshow';
 import { useAppStore } from '../../stores/app-store';
 import { useKeyboardNavigation } from '../../hooks/use-keyboard-navigation';
 import { useTouchGestures } from '../../hooks/use-touch-gestures';
-import { useBatchPosts } from '../../hooks/useContent';
+import { useBatchPosts, useLoadMorePosts } from '../../hooks/useContent';
+import { useWakeLock } from '../../hooks/useWakeLock';
+import { getProxiedMediaUrl } from '../../utils/media-proxy';
 import HelpOverlay from '../common/HelpOverlay';
 import { GestureFeedback, type GestureFeedbackRef } from './GestureFeedback';
 import './gesture-feedback.css';
@@ -24,18 +26,44 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
   const [showControls, setShowControls] = useState(true);
   const [showHelpOverlay, setShowHelpOverlay] = useState(false);
   const [progress, setProgress] = useState(0); // Progress percentage (0-100)
+  const consecutiveErrorSkipsRef = useRef(0);
 
   // Store and hooks
   const slideshow = useSlideshow();
   const batchPostsMutation = useBatchPosts();
+  const loadMoreMutation = useLoadMorePosts();
   const {
     ui: { isMobile },
     content: { selectedCommunities },
+    settings: {
+      display: { keepScreenAwake = false } = { keepScreenAwake: false },
+    },
   } = useAppStore();
 
   // Current post data
   const currentPost = slideshow.currentPost;
   const hasContent = (slideshow.slideshow.posts || []).length > 0;
+  const [fatalError, setFatalError] = useState<string | null>(null);
+  const [initialAttemptDone, setInitialAttemptDone] = useState(false);
+
+  // Wake Lock: keep screen on while playing if user enabled the setting
+  useWakeLock(!!keepScreenAwake && slideshow.slideshow.isPlaying && hasContent);
+
+  // Guard against silent blank screen: detect rapid failures / empty responses
+  useEffect(() => {
+    if (batchPostsMutation.error) {
+      const err = batchPostsMutation.error as any;
+      const msg = err?.message || String(err);
+      // Flag DNS / proxy faults explicitly
+      if (/ENOTFOUND|EAI_AGAIN|DNS_RESOLUTION_FAILED/i.test(msg)) {
+        setFatalError(
+          'Cannot reach selected Lemmy instance (DNS lookup failed). Check your network or try a different instance.'
+        );
+      } else if (/Proxy error/i.test(msg)) {
+        setFatalError('Upstream proxy failed to fetch data from instance.');
+      }
+    }
+  }, [batchPostsMutation.error]);
 
   // Auto-hide controls on mobile
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -85,13 +113,35 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
   // Set timing handler
   const handleSetTiming = useCallback(
     (seconds: number) => {
-      // Set timing for both images and gifs
-      slideshow.setTiming('images', seconds * 1000); // Convert to milliseconds
-      slideshow.setTiming('gifs', seconds * 1000);
+      // Set timing for both images and gifs (seconds; conversion happens in hook)
+      slideshow.setTiming('images', seconds);
+      slideshow.setTiming('gifs', seconds);
       console.log('Set timing to:', seconds, 'seconds');
     },
     [slideshow]
   );
+
+  // Reset error-skip counter on successful media load
+  const handleMediaLoadSuccess = useCallback(() => {
+    consecutiveErrorSkipsRef.current = 0;
+  }, []);
+
+  // On media error (e.g., 404), skip forward until something loads or we hit a safe cap
+  const handleMediaError = useCallback(() => {
+    const total = (slideshow.slideshow.posts || []).length;
+    const maxSkips = Math.max(total, 10); // allow at least 10 attempts even with few posts
+    consecutiveErrorSkipsRef.current += 1;
+    console.warn(
+      `[Slideshow] Media failed to load. Skipping ${consecutiveErrorSkipsRef.current}/${maxSkips}`
+    );
+    if (consecutiveErrorSkipsRef.current > maxSkips) {
+      console.error('[Slideshow] Too many consecutive media errors. Pausing.');
+      consecutiveErrorSkipsRef.current = 0;
+      slideshow.pause();
+      return;
+    }
+    slideshow.next();
+  }, [slideshow]);
 
   // Setup keyboard navigation
   useKeyboardNavigation({
@@ -158,8 +208,8 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
       }, [toggleFullscreen]),
     },
     {
-      minSwipeDistance: 50, // Increased for more deliberate swipes
-      maxSwipeTime: 500,
+      minSwipeDistance: 30, // More forgiving for mobile swipes
+      maxSwipeTime: 600,
       preventDefaultOnSwipe: true,
       maxTapDuration: 300,
       maxTapMovement: 10,
@@ -201,21 +251,55 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     if (hasTriedInitialLoad.current) return; // Only run once
 
     hasTriedInitialLoad.current = true;
+    console.log('[SlideshowView] 🟢 Initial load effect running');
 
     // Get current posts to check if we need to load
     const currentPosts = useAppStore.getState().slideshow.posts;
+    console.log(
+      '[SlideshowView] Current posts length at mount:',
+      currentPosts?.length || 0
+    );
 
     // Only load if no content exists
     if (currentPosts && currentPosts.length > 0) return;
 
+    // Randomize pagination to get fresh content on restart
+    const { getRandomizedFreshContent } = useAppStore.getState();
+    getRandomizedFreshContent();
+    console.log('[SlideshowView] 🎲 Randomized pagination cursors');
+
     // If we have selected communities, load posts from them
     if (selectedCommunities && selectedCommunities.length > 0) {
+      console.log(
+        '[SlideshowView] Fetching initial posts from selected communities'
+      );
       batchPostsMutation.mutate();
     } else {
       // If no communities selected, load from the "All" feed as a fallback
       // This gives users some content to browse while they select communities
+      console.log(
+        '[SlideshowView] No communities selected, fetching from global feed'
+      );
       batchPostsMutation.mutate();
     }
+    setInitialAttemptDone(true);
+
+    // Watchdog: if after 2500ms we still have no posts & not loading & no error, retry once
+    const watchdog = setTimeout(() => {
+      const state = useAppStore.getState();
+      if (
+        state.slideshow.posts.length === 0 &&
+        !batchPostsMutation.isPending &&
+        !batchPostsMutation.error
+      ) {
+        console.warn(
+          '[SlideshowView] ⏰ Watchdog retrying initial load (no posts after 2.5s)'
+        );
+        batchPostsMutation.mutate();
+      }
+    }, 2500);
+
+    return () => clearTimeout(watchdog);
   }, []); // Empty dependency array - run only once on mount
 
   // Reload content when selected communities change
@@ -309,6 +393,70 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     currentPost,
   ]);
 
+  // Infinite loading: when near end (within 3 of last) load more if available
+  useEffect(() => {
+    const state = useAppStore.getState();
+    const posts = Array.isArray(state.slideshow?.posts)
+      ? state.slideshow.posts
+      : [];
+    const hasMore = Boolean(state.content?.hasMore);
+    const loading = Boolean(state.ui?.loading) || loadMoreMutation.isPending;
+    const currentIndex = state.slideshow?.currentIndex ?? 0;
+    const threshold = 3; // when user is within last 3 items
+    if (
+      hasMore &&
+      !loading &&
+      posts.length > 0 &&
+      currentIndex >= Math.max(posts.length - threshold, 0)
+    ) {
+      // Trigger load more
+      loadMoreMutation.mutate();
+    }
+  }, [slideshow.slideshow.currentIndex, loadMoreMutation]);
+
+  // Stuck playback watchdog: if we have >1 posts, playing is enabled, but index stays at 0 for too long, attempt a nudge
+  useEffect(() => {
+    if (!slideshow.slideshow.autoAdvance) return;
+    const startPostsLen = (slideshow.slideshow.posts || []).length;
+    if (startPostsLen <= 1) return; // Single post case handled elsewhere
+    const startIndex = slideshow.slideshow.currentIndex;
+    let cleared = false;
+    const timer = setTimeout(() => {
+      if (cleared) return;
+      const state = useAppStore.getState();
+      const stillIndex = state.slideshow.currentIndex;
+      const len = state.slideshow.posts.length;
+      if (len > 1 && stillIndex === startIndex) {
+        console.warn(
+          '[SlideshowView] Watchdog detected stagnation at first slide. Attempting recovery.'
+        );
+        // Try advancing manually
+        slideshow.next();
+        // If that fails to change index shortly, force re-fetch
+        setTimeout(() => {
+          const st2 = useAppStore.getState();
+          if (st2.slideshow.currentIndex === startIndex) {
+            console.warn(
+              '[SlideshowView] Recovery advance failed; forcing slideshow reset & refetch.'
+            );
+            slideshow.resetSlideshow();
+            batchPostsMutation.mutate();
+          }
+        }, 750);
+      }
+    }, 5000); // 5s of no progress after mount/change
+    return () => {
+      cleared = true;
+      clearTimeout(timer);
+    };
+  }, [
+    slideshow.slideshow.currentIndex,
+    slideshow.slideshow.posts,
+    slideshow.slideshow.autoAdvance,
+    slideshow,
+    batchPostsMutation,
+  ]);
+
   // Listen for help overlay toggle (H key)
 
   // Cleanup timeouts
@@ -331,6 +479,36 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     );
   }
 
+  // Fatal overlay (takes precedence)
+  if (fatalError) {
+    return (
+      <div
+        className={`slideshow-container ${className} bg-black flex items-center justify-center min-h-screen`}
+      >
+        <div className='text-center text-white max-w-xl px-6'>
+          <h2 className='text-2xl font-bold mb-4'>Connection Problem</h2>
+          <p className='text-red-400 mb-4'>{fatalError}</p>
+          <ul className='text-sm text-gray-300 text-left mb-4 list-disc pl-5 space-y-1'>
+            <li>Verify the instance domain is correct (e.g. lemmy.world)</li>
+            <li>Try toggling the custom proxy option in settings</li>
+            <li>Check local DNS / VPN / firewall interference</li>
+            <li>Pick a different instance temporarily</li>
+          </ul>
+          <button
+            onClick={() => {
+              setFatalError(null);
+              slideshow.resetSlideshow();
+              batchPostsMutation.mutate();
+            }}
+            className='px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors'
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // Empty state
   if (!hasContent) {
     return (
@@ -339,8 +517,14 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
       >
         <div className='text-center text-white'>
           <h2 className='text-2xl font-bold mb-4'>No content available</h2>
+          {initialAttemptDone && !batchPostsMutation.isPending && (
+            <p className='text-yellow-400 mb-2'>
+              Attempted to load but received 0 posts. A fallback to the global
+              feed may have been tried.
+            </p>
+          )}
           <p className='text-gray-300 mb-2'>
-            Selected communities: {selectedCommunities.length}
+            Selected communities: {selectedCommunities?.length ?? 0}
           </p>
           <p className='text-gray-300 mb-2'>
             Total posts: {slideshow.slideshow.posts?.length || 0}
@@ -401,6 +585,7 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
       className={`slideshow-container ${className} ${
         isFullscreen ? 'fullscreen' : ''
       } bg-black min-h-screen relative overflow-hidden`}
+      style={{ touchAction: 'pan-y', overscrollBehavior: 'contain' }}
       onMouseMove={handleMouseMove}
       tabIndex={0}
       role='region'
@@ -413,21 +598,34 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
           <div className='max-w-full max-h-full'>
             {currentPost.mediaType === 'video' ? (
               <video
-                src={currentPost.url}
+                src={getProxiedMediaUrl(currentPost.url)}
                 className='max-w-full max-h-full object-contain'
                 controls={false}
                 autoPlay
                 muted
                 playsInline
+                onLoadedData={handleMediaLoadSuccess}
+                onCanPlay={handleMediaLoadSuccess}
+                onEnded={() => {
+                  // When video timing is 0 => play full duration, then advance
+                  if (slideshow.slideshow.timing.videos === 0) {
+                    slideshow.next();
+                  }
+                }}
+                onError={() => {
+                  console.error('Video load error for:', currentPost.url);
+                  handleMediaError();
+                }}
               />
             ) : (
               <img
-                src={currentPost.url}
+                src={getProxiedMediaUrl(currentPost.url)}
                 alt={currentPost.title}
                 className='max-w-full max-h-full object-contain'
+                onLoad={handleMediaLoadSuccess}
                 onError={() => {
                   console.error('Image load error for:', currentPost.url);
-                  slideshow.next();
+                  handleMediaError();
                 }}
               />
             )}
@@ -619,6 +817,28 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
 
           {!isMobile && (
             <button
+              onClick={() => {
+                console.log('🔄 User requested fresh content');
+                const { getRandomizedFreshContent } = useAppStore.getState();
+                getRandomizedFreshContent();
+                batchPostsMutation.mutate();
+              }}
+              className='text-white hover:text-blue-400'
+              title='Get fresh content'
+              aria-label='Get fresh content'
+            >
+              <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+                <path
+                  fillRule='evenodd'
+                  d='M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z'
+                  clipRule='evenodd'
+                />
+              </svg>
+            </button>
+          )}
+
+          {!isMobile && (
+            <button
               onClick={toggleHelpOverlay}
               className='text-white hover:text-blue-400'
               title='Keyboard shortcuts (H)'
@@ -673,10 +893,30 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
             showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
           } flex flex-col gap-2`}
         >
+          {/* Refresh button */}
+          <button
+            onClick={() => {
+              console.log('🔄 User requested fresh content');
+              const { getRandomizedFreshContent } = useAppStore.getState();
+              getRandomizedFreshContent();
+              batchPostsMutation.mutate();
+            }}
+            className='text-white hover:text-blue-400 active:text-blue-300 active:scale-95 p-3 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full transition-all duration-150 touch-manipulation'
+            aria-label='Get fresh content'
+          >
+            <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
+              <path
+                fillRule='evenodd'
+                d='M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z'
+                clipRule='evenodd'
+              />
+            </svg>
+          </button>
+
           {/* Settings button */}
           <Link
             to='/settings'
-            className='text-white hover:text-blue-400 p-3 bg-black bg-opacity-50 rounded-full'
+            className='text-white hover:text-blue-400 active:text-blue-300 active:scale-95 p-3 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full transition-all duration-150 touch-manipulation'
             aria-label='Settings'
           >
             <svg className='w-6 h-6' fill='currentColor' viewBox='0 0 20 20'>
@@ -691,7 +931,7 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
           {/* Fullscreen button */}
           <button
             onClick={toggleFullscreen}
-            className='text-white hover:text-blue-400 p-3 bg-black bg-opacity-50 rounded-full'
+            className='text-white hover:text-blue-400 active:text-blue-300 active:scale-95 p-3 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full transition-all duration-150 touch-manipulation'
             aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
           >
             {isFullscreen ? (

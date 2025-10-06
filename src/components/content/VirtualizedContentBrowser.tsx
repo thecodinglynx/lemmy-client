@@ -8,6 +8,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { useVirtualScroll } from '../../hooks/useVirtualScroll';
 import { useAppStore } from '../../stores/app-store';
+import { getProxiedMediaUrl } from '../../utils/media-proxy';
 import type { SlideshowPost } from '../../types';
 
 interface VirtualizedContentBrowserProps {
@@ -45,7 +46,7 @@ const PostItem: React.FC<{
           <div className='flex-shrink-0 w-16 h-16 bg-gray-200 dark:bg-gray-600 rounded-lg overflow-hidden'>
             {post.thumbnailUrl ? (
               <img
-                src={post.thumbnailUrl}
+                src={getProxiedMediaUrl(post.thumbnailUrl)}
                 alt=''
                 className='w-full h-full object-cover'
                 loading='lazy'

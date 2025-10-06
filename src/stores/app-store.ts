@@ -55,6 +55,9 @@ const initialContentState: ContentState = {
   viewedPosts: new Set(),
   currentBatch: 1,
   hasMore: true,
+  paginationCursors: {},
+  globalCursor: undefined,
+  likedPosts: {},
 };
 
 const initialSettingsState: SettingsState = {
@@ -80,6 +83,7 @@ const initialSettingsState: SettingsState = {
     showControls: true,
     fullscreenDefault: false,
     attributionPosition: 'bottom' as const,
+    keepScreenAwake: false,
   },
   controls: {
     keyboardShortcuts: {
@@ -104,6 +108,7 @@ const initialSettingsState: SettingsState = {
     enableVirtualScrolling: false,
     maxCacheSize: 100,
   },
+  contentSource: 'feed',
 };
 
 const initialUIState: UIState = {
@@ -143,6 +148,17 @@ interface AppStore extends AppState {
   clearViewedHistory: () => void;
   incrementBatch: () => void;
   resetQueue: () => void;
+  // Pagination actions
+  setPaginationCursor: (communityId: string, cursor: string) => void;
+  setGlobalCursor: (cursor: string) => void;
+  getNextCursor: (communityId?: string) => string | undefined;
+  advancePagination: (communityId?: string) => void;
+  getRandomizedFreshContent: () => void;
+  setHasMore: (hasMore: boolean) => void;
+  // Likes
+  toggleLike: (post: SlideshowPost) => void;
+  removeLike: (postId: string) => void;
+  loadLikedIntoSlideshow: () => void;
 
   // Settings actions
   updateSettings: (settings: Partial<SettingsState>) => void;
@@ -249,6 +265,24 @@ export const useAppStore = create<AppStore>()(
           set((state) => {
             state.slideshow.currentIndex = 0;
             state.slideshow.isPlaying = false;
+            // Clear posts so a fresh fetch repopulates cleanly
+            state.slideshow.posts = [];
+            // Also clear viewed history to avoid treating future posts as already consumed
+            if (state.content) {
+              // If rehydration hasn't yet converted an array -> Set, do it now
+              if (Array.isArray(state.content.viewedPosts)) {
+                state.content.viewedPosts = new Set(state.content.viewedPosts);
+              }
+              if (
+                state.content.viewedPosts &&
+                typeof (state.content.viewedPosts as any).clear === 'function'
+              ) {
+                state.content.viewedPosts.clear();
+              } else {
+                // Fallback: reinitialize
+                state.content.viewedPosts = new Set();
+              }
+            }
           }),
 
         setPosts: (posts: SlideshowPost[]) =>
@@ -310,14 +344,13 @@ export const useAppStore = create<AppStore>()(
             );
           }),
 
-        setFilters: (filters) =>
+        setFilters: (filters: Partial<ContentState['filters']>) =>
           set((state) => {
             state.content.filters = { ...state.content.filters, ...filters };
           }),
 
         addToQueue: (posts: SlideshowPost[]) =>
           set((state) => {
-            // Filter out already queued posts
             const newPosts = posts.filter(
               (post: SlideshowPost) =>
                 !state.content.queue.find(
@@ -348,6 +381,98 @@ export const useAppStore = create<AppStore>()(
             state.content.currentBatch = 1;
             state.content.hasMore = true;
           }),
+
+        setHasMore: (hasMore: boolean) =>
+          set((state) => {
+            state.content.hasMore = hasMore;
+          }),
+
+        // Pagination actions
+        setPaginationCursor: (communityId: string, cursor: string) =>
+          set((state) => {
+            if (
+              !state.content.paginationCursors ||
+              typeof state.content.paginationCursors !== 'object'
+            ) {
+              console.warn(
+                '[app-store] paginationCursors missing; reinitializing to {}'
+              );
+              state.content.paginationCursors = {} as any;
+            }
+            state.content.paginationCursors[communityId] = cursor;
+          }),
+
+        setGlobalCursor: (cursor: string) =>
+          set((state) => {
+            state.content.globalCursor = cursor;
+          }),
+
+        getNextCursor: (communityId?: string) => {
+          const state = get();
+          if (communityId) {
+            const cursors = state.content?.paginationCursors;
+            if (!cursors || typeof cursors !== 'object') return undefined;
+            return (cursors as Record<string, string | undefined>)[communityId];
+          }
+          return state.content?.globalCursor;
+        },
+
+        advancePagination: (communityId?: string) =>
+          set((state) => {
+            // This will be called when we want to advance to the next page
+            // The actual cursor update happens in the hook when we receive new data
+            if (communityId) {
+              if (
+                !state.content.paginationCursors ||
+                typeof state.content.paginationCursors !== 'object'
+              ) {
+                state.content.paginationCursors = {} as any;
+              }
+              // Reset cursor to get fresh content from this community
+              delete state.content.paginationCursors[communityId];
+            } else {
+              // Reset global cursor to get fresh content
+              state.content.globalCursor = undefined;
+            }
+          }),
+
+        // Helper action to advance pagination to get fresh content on restart
+        getRandomizedFreshContent: () => {
+          try {
+            const { content, advancePagination } = get();
+            if (!content) {
+              console.warn(
+                '[app-store] getRandomizedFreshContent: content slice undefined'
+              );
+              return;
+            }
+            const rawCursors = (content as any).paginationCursors;
+            if (!rawCursors || typeof rawCursors !== 'object') {
+              console.log(
+                '[app-store] getRandomizedFreshContent: no paginationCursors present, skipping'
+              );
+              return;
+            }
+            const paginationCursors: Record<string, string> = rawCursors;
+            const globalCursor = content.globalCursor;
+            const hasCursors =
+              !!globalCursor || Object.keys(paginationCursors).length > 0;
+            if (!hasCursors) return;
+            const shouldAdvance = Math.random() < 0.3;
+            if (!shouldAdvance) return;
+            console.log(
+              '🎲 Advancing pagination to get fresh content on restart'
+            );
+            if (globalCursor) {
+              advancePagination();
+            }
+            Object.keys(paginationCursors).forEach((communityId) => {
+              advancePagination(communityId);
+            });
+          } catch (err) {
+            console.error('[app-store] getRandomizedFreshContent error:', err);
+          }
+        },
 
         // Settings actions
         updateSettings: (settings) =>
@@ -456,6 +581,12 @@ export const useAppStore = create<AppStore>()(
             if (!state.content.viewedPosts) {
               state.content.viewedPosts = new Set();
             }
+            // If somehow persisted as plain array and not yet converted
+            if (Array.isArray(state.content.viewedPosts)) {
+              state.content.viewedPosts = new Set(
+                state.content.viewedPosts as string[]
+              );
+            }
             if (!state.content.queue) {
               state.content.queue = [];
             }
@@ -466,12 +597,7 @@ export const useAppStore = create<AppStore>()(
               state.content.hasMore = true;
             }
 
-            // Convert Set back from array if needed
-            if (Array.isArray(state.content.viewedPosts)) {
-              state.content.viewedPosts = new Set(
-                state.content.viewedPosts as string[]
-              );
-            }
+            // (Removed duplicate conversion block; handled above)
 
             // Detect if mobile
             if (typeof window !== 'undefined') {
@@ -489,26 +615,57 @@ export const useAppStore = create<AppStore>()(
           })),
       })),
       {
+        // Persist everything under one key; reuse SETTINGS key to avoid schema explosion
         name: STORAGE_KEYS.SETTINGS,
         storage: createJSONStorage(() => localStorage),
-        partialize: (state) => ({
-          // Only persist certain parts of the state
-          settings: state.settings,
-          content: {
-            selectedCommunities: state.content.selectedCommunities,
-            selectedUsers: state.content.selectedUsers,
-            filters: state.content.filters,
-          },
-          slideshow: {
-            timing: state.slideshow.timing,
-            autoAdvance: state.slideshow.autoAdvance,
-            loop: state.slideshow.loop,
-          },
-        }),
-        onRehydrateStorage: () => (state) => {
-          if (state) {
-            state.rehydrate();
+        migrate: (persistedState: any) => {
+          if (!persistedState) return persistedState;
+          if (!persistedState.content) {
+            persistedState.content = { ...initialContentState };
+          } else {
+            const c = persistedState.content;
+            if (!Array.isArray(c.selectedCommunities))
+              c.selectedCommunities = [];
+            if (!Array.isArray(c.selectedUsers)) c.selectedUsers = [];
+            if (!c.filters) c.filters = { ...initialContentState.filters };
+            if (!c.paginationCursors || typeof c.paginationCursors !== 'object')
+              c.paginationCursors = {};
+            if (typeof c.hasMore !== 'boolean') c.hasMore = true;
+            if (!('currentBatch' in c)) c.currentBatch = 1;
+            if (Array.isArray(c.viewedPosts)) {
+              c.viewedPosts = new Set(c.viewedPosts);
+            }
+            if (!c.viewedPosts) {
+              c.viewedPosts = new Set();
+            }
           }
+          if (!persistedState.slideshow) {
+            persistedState.slideshow = { ...initialSlideshowState };
+          } else {
+            const s = persistedState.slideshow;
+            if (!Array.isArray(s.posts)) s.posts = [];
+            if (typeof s.currentIndex !== 'number') s.currentIndex = 0;
+          }
+          if (!persistedState.settings) {
+            persistedState.settings = { ...initialSettingsState };
+          } else {
+            const setg = persistedState.settings;
+            if (!setg.server) setg.server = { ...initialSettingsState.server };
+            if (!setg.intervals)
+              setg.intervals = { ...initialSettingsState.intervals };
+            if (!setg.display)
+              setg.display = { ...initialSettingsState.display };
+            else if (typeof setg.display.keepScreenAwake === 'undefined')
+              setg.display.keepScreenAwake = false;
+          }
+          if (!persistedState.ui) {
+            persistedState.ui = { ...initialUIState };
+          }
+          return persistedState;
+        },
+        // Persist entire state since we have migrate + defensive rehydrate
+        onRehydrateStorage: () => (state) => {
+          if (state) state.rehydrate();
         },
       }
     )

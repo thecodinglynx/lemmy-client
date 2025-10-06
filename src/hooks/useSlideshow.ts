@@ -20,6 +20,7 @@ export function useSlideshow() {
   } = useAppStore();
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const navLockRef = useRef(false);
 
   // Defensive check for slideshow.posts
   const posts = slideshow.posts || [];
@@ -35,13 +36,13 @@ export function useSlideshow() {
       return;
     }
 
-    const getCurrentTiming = () => {
+    const getCurrentTimingMs = () => {
       if (!currentPost) return slideshow.timing.images * 1000;
 
       switch (currentPost.mediaType) {
         case MediaType.VIDEO:
           return slideshow.timing.videos === 0
-            ? 0
+            ? 0 // play full duration; advance on onEnded
             : slideshow.timing.videos * 1000;
         case MediaType.GIF:
           return slideshow.timing.gifs * 1000;
@@ -51,7 +52,7 @@ export function useSlideshow() {
       }
     };
 
-    const timing = getCurrentTiming();
+    const timing = getCurrentTimingMs();
 
     if (timing > 0) {
       intervalRef.current = setInterval(() => {
@@ -74,6 +75,27 @@ export function useSlideshow() {
     currentPost,
     next,
   ]);
+
+  // Wrap next/previous with a short re-entrancy guard
+  const guardedNext = useCallback(() => {
+    if (navLockRef.current) return;
+    navLockRef.current = true;
+    try {
+      next();
+    } finally {
+      setTimeout(() => (navLockRef.current = false), 50);
+    }
+  }, [next]);
+
+  const guardedPrevious = useCallback(() => {
+    if (navLockRef.current) return;
+    navLockRef.current = true;
+    try {
+      previous();
+    } finally {
+      setTimeout(() => (navLockRef.current = false), 50);
+    }
+  }, [previous]);
 
   // Keyboard shortcuts
   const handleKeyDown = useCallback(
@@ -209,6 +231,7 @@ export function useSlideshow() {
   useEffect(() => {
     const { PRELOAD_COUNT } = { PRELOAD_COUNT: { AHEAD: 3, BEHIND: 1 } }; // From constants
     const currentIndex = slideshow.currentIndex;
+    if (posts.length === 0) return;
 
     // Preload ahead
     for (let i = 1; i <= PRELOAD_COUNT.AHEAD; i++) {
@@ -236,8 +259,8 @@ export function useSlideshow() {
     play,
     pause,
     togglePlay,
-    next,
-    previous,
+    next: guardedNext,
+    previous: guardedPrevious,
     goToIndex,
     resetSlideshow,
     setPosts,

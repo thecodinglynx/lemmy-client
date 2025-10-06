@@ -84,17 +84,17 @@ export function useCommunityPosts(
       });
 
       // Transform to slideshow posts and filter based on content settings
-      const slideshowPosts: SlideshowPost[] = response
+      const slideshowPosts: SlideshowPost[] = response.posts
         .filter((post: PostView) => {
           // Filter by media type
           const hasMedia =
             post.post.url &&
             ((content.filters.mediaTypes.includes(MediaType.IMAGE) &&
-              /\.(jpe?g|png|gif|webp|avif)$/i.test(post.post.url)) ||
+              isImageUrl(post.post.url)) ||
               (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
-                /\.(mp4|webm|ogg)$/i.test(post.post.url)) ||
+                isVideoUrl(post.post.url)) ||
               (content.filters.mediaTypes.includes(MediaType.GIF) &&
-                /\.gif$/i.test(post.post.url)));
+                isGifUrl(post.post.url)));
 
           // Filter by score
           const meetsMinScore = post.counts.score >= content.filters.minScore;
@@ -206,39 +206,95 @@ export function useStarPost() {
 
 // Hook for batch loading posts from multiple sources
 export function useBatchPosts() {
-  const { content, setLoading, setPosts } = useAppStore();
+  const {
+    content,
+    setLoading,
+    setPosts,
+    getNextCursor,
+    setGlobalCursor,
+    setPaginationCursor,
+    setHasMore,
+  } = useAppStore();
 
   return useMutation({
     mutationFn: async () => {
+      console.log('[useBatchPosts] 🚀 Starting batch post load mutation');
       setLoading(true);
       const allPosts: SlideshowPost[] = [];
 
       try {
         const apiClient = getApiClient();
+        console.log(
+          '[useBatchPosts] ✅ API client created, proceeding with fetch logic'
+        );
 
         // If no communities are selected, fetch from the "All" feed as fallback
         if (content.selectedCommunities.length === 0) {
           console.log('📡 No communities selected, fetching from All feed...');
+
+          // Get the current cursor for the global feed
+          const currentCursor = getNextCursor();
+
           const response = await apiClient.getPosts({
             sort: 'Hot' as any,
             limit: 50, // Get more posts from All feed for variety
             type_: 'All',
+            page_cursor: currentCursor,
           });
+          console.log('[useBatchPosts] 🌐 Fetch to global feed completed');
 
-          const posts = response
+          console.log(
+            `📊 Raw response from All feed: ${response.posts.length} posts`
+          );
+          console.log(`📄 Next cursor available: ${!!response.nextCursor}`);
+
+          // Update the global cursor for next time
+          if (response.nextCursor) {
+            setGlobalCursor(response.nextCursor as string);
+            setHasMore(true);
+          } else {
+            // No further pages
+            setHasMore(false);
+          }
+
+          const posts = response.posts
             .filter((post: PostView) => {
+              console.log(`🔍 Checking post: "${post.post.name}"`);
+              console.log(`   URL: ${post.post.url || 'NO URL'}`);
+
+              if (!post.post.url) {
+                console.log(`   ❌ No URL found`);
+                return false;
+              }
+
+              const isImage = isImageUrl(post.post.url);
+              const isVideo = isVideoUrl(post.post.url);
+              const isGif = isGifUrl(post.post.url);
+
+              console.log(
+                `   Image: ${isImage} | Video: ${isVideo} | GIF: ${isGif}`
+              );
+              console.log(
+                `   Media types enabled: ${JSON.stringify(content.filters.mediaTypes)}`
+              );
+
               const hasMedia =
-                post.post.url &&
-                ((content.filters.mediaTypes.includes(MediaType.IMAGE) &&
-                  /\.(jpe?g|png|gif|webp|avif)$/i.test(post.post.url)) ||
-                  (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
-                    /\.(mp4|webm|ogg)$/i.test(post.post.url)) ||
-                  (content.filters.mediaTypes.includes(MediaType.GIF) &&
-                    /\.gif$/i.test(post.post.url)));
+                (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                  isImage) ||
+                (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                  isVideo) ||
+                (content.filters.mediaTypes.includes(MediaType.GIF) && isGif);
 
               const meetsMinScore =
                 post.counts.score >= content.filters.minScore;
               const isNSFWAllowed = content.filters.showNSFW || !post.post.nsfw;
+
+              console.log(
+                `   Has media: ${hasMedia} | Score: ${post.counts.score} >= ${content.filters.minScore} = ${meetsMinScore} | NSFW: ${post.post.nsfw} (allowed: ${content.filters.showNSFW}) = ${isNSFWAllowed}`
+              );
+              console.log(
+                `   Final result: ${hasMedia && meetsMinScore && isNSFWAllowed}`
+              );
 
               return hasMedia && meetsMinScore && isNSFWAllowed;
             })
@@ -271,18 +327,51 @@ export function useBatchPosts() {
             console.log(
               `🏘️ Fetching posts from community: ${community.name} (ID: ${community.id})`
             );
+
+            // Get the current cursor for this community
+            const currentCursor = getNextCursor(community.id.toString());
+            const communityFetchStart = performance.now();
+            let communityErrored = false;
+
             const response = await apiClient.getPosts({
               community_id: community.id,
               sort: 'Hot' as any,
               limit: 20,
               type_: 'All',
+              page_cursor: currentCursor,
             });
-
             console.log(
-              `📊 Raw response from ${community.name}: ${response.length} posts`
+              `[useBatchPosts] ⏱️ Community ${community.name} fetch took ${Math.round(
+                performance.now() - communityFetchStart
+              )}ms`
+            );
+            if (!response || !Array.isArray(response.posts)) {
+              console.warn(
+                `[useBatchPosts] ⚠️ Unexpected response shape for community ${community.name}`
+              );
+              communityErrored = true;
+            }
+            console.log(
+              `[useBatchPosts] 🌐 Fetch completed for community ${community.name}`
             );
 
-            const posts = response
+            console.log(
+              `📊 Raw response from ${community.name}: ${response.posts.length} posts`
+            );
+            console.log(`📄 Next cursor available: ${!!response.nextCursor}`);
+
+            // Update the cursor for this community for next time
+            if (response.nextCursor) {
+              setPaginationCursor(
+                community.id.toString(),
+                response.nextCursor as string
+              );
+              setHasMore(true);
+            } else {
+              setHasMore(false);
+            }
+
+            const posts = response.posts
               .filter((post: PostView) => {
                 const hasUrl = !!post.post.url;
                 if (!hasUrl) {
@@ -291,9 +380,9 @@ export function useBatchPosts() {
                 }
 
                 const url = post.post.url!;
-                const isImage = /\.(jpe?g|png|gif|webp|avif)$/i.test(url);
-                const isVideo = /\.(mp4|webm|ogg)$/i.test(url);
-                const isGif = /\.gif$/i.test(url);
+                const isImage = isImageUrl(url);
+                const isVideo = isVideoUrl(url);
+                const isGif = isGifUrl(url);
 
                 console.log(
                   `🔍 Post: "${post.post.name}" | URL: ${url.substring(0, 60)}...`
@@ -348,6 +437,15 @@ export function useBatchPosts() {
               `✅ After filtering ${community.name}: ${posts.length} valid media posts`
             );
             allPosts.push(...posts);
+            if (
+              !communityErrored &&
+              posts.length === 0 &&
+              !response.nextCursor
+            ) {
+              console.log(
+                `[useBatchPosts] 🔚 Community ${community.name} appears exhausted (no cursor, no posts)`
+              );
+            }
           }
         }
 
@@ -364,15 +462,277 @@ export function useBatchPosts() {
         }
 
         console.log(
-          `📊 Final result: ${uniquePosts.length} unique posts ready for slideshow`
+          `📊 Final result: ${uniquePosts.length} unique posts after community fetch`
         );
+
+        // If we ended up with 0 or 1 posts after selecting communities, fetch supplemental content from global feed
+        if (content.selectedCommunities.length > 0 && uniquePosts.length <= 1) {
+          console.warn(
+            '[useBatchPosts] ⚠️ Insufficient media from selected communities (<=1). Fetching supplemental global feed posts.'
+          );
+          try {
+            const currentCursor = getNextCursor();
+            const response = await getApiClient().getPosts({
+              sort: 'Hot' as any,
+              limit: 40,
+              type_: 'All',
+              page_cursor: currentCursor,
+            });
+            const supplemental = response.posts
+              .filter((post: PostView) => {
+                if (!post.post.url) return false;
+                const url = post.post.url;
+                return (
+                  (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                    isImageUrl(url)) ||
+                  (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                    isVideoUrl(url)) ||
+                  (content.filters.mediaTypes.includes(MediaType.GIF) &&
+                    isGifUrl(url))
+                );
+              })
+              .map(
+                (post: PostView): SlideshowPost => ({
+                  id: post.post.id.toString(),
+                  postId: post.post.id,
+                  title: post.post.name,
+                  url: post.post.url!,
+                  mediaType: getMediaType(post.post.url!),
+                  thumbnailUrl: post.post.thumbnail_url,
+                  creator: post.creator,
+                  community: post.community,
+                  score: post.counts.score,
+                  published: post.post.published,
+                  nsfw: post.post.nsfw,
+                  starred: false,
+                  viewed: false,
+                })
+              );
+            console.warn(
+              `[useBatchPosts] 🛟 Supplemental global feed supplied ${supplemental.length} posts.`
+            );
+            // Merge & dedupe again
+            const merged = [...uniquePosts, ...supplemental].filter(
+              (post, index, self) =>
+                index === self.findIndex((p) => p.id === post.id)
+            );
+            console.log(
+              `[useBatchPosts] 📊 Final merged posts count: ${merged.length}`
+            );
+            return merged;
+          } catch (suppErr) {
+            console.error(
+              '[useBatchPosts] ❌ Supplemental global fetch failed:',
+              suppErr
+            );
+          }
+        }
+
+        // Fallback: if we selected communities but ended with zero posts (over-filter / no media)
+        if (
+          content.selectedCommunities.length > 0 &&
+          uniquePosts.length === 0
+        ) {
+          console.warn(
+            '⚠️ No media posts found in selected communities. Attempting one-time fallback to All feed.'
+          );
+          try {
+            const currentCursor = getNextCursor();
+            const response = await getApiClient().getPosts({
+              sort: 'Hot' as any,
+              limit: 30,
+              type_: 'All',
+              page_cursor: currentCursor,
+            });
+            const fallbackPosts = response.posts
+              .filter((post: PostView) => {
+                if (!post.post.url) return false;
+                const url = post.post.url;
+                return (
+                  (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                    isImageUrl(url)) ||
+                  (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                    isVideoUrl(url)) ||
+                  (content.filters.mediaTypes.includes(MediaType.GIF) &&
+                    isGifUrl(url))
+                );
+              })
+              .map(
+                (post: PostView): SlideshowPost => ({
+                  id: post.post.id.toString(),
+                  postId: post.post.id,
+                  title: post.post.name,
+                  url: post.post.url!,
+                  mediaType: getMediaType(post.post.url!),
+                  thumbnailUrl: post.post.thumbnail_url,
+                  creator: post.creator,
+                  community: post.community,
+                  score: post.counts.score,
+                  published: post.post.published,
+                  nsfw: post.post.nsfw,
+                  starred: false,
+                  viewed: false,
+                })
+              );
+            console.warn(
+              `🛟 Fallback All feed supplied ${fallbackPosts.length} posts.`
+            );
+            return fallbackPosts;
+          } catch (fallbackErr) {
+            console.error('❌ Fallback to All feed failed:', fallbackErr);
+            return uniquePosts; // still empty
+          }
+        }
+
         return uniquePosts;
       } finally {
         setLoading(false);
       }
     },
     onSuccess: (posts) => {
+      console.log(
+        `✅ Mutation success - setting ${posts.length} posts to slideshow state`
+      );
       setPosts(posts);
+    },
+  });
+}
+
+// Hook to load additional posts when user nears end of slideshow
+export function useLoadMorePosts() {
+  const {
+    content,
+    setLoading,
+    addPosts,
+    getNextCursor,
+    setGlobalCursor,
+    setPaginationCursor,
+    setHasMore,
+  } = useAppStore();
+
+  return useMutation({
+    mutationFn: async () => {
+      if (!content.hasMore) return [] as SlideshowPost[];
+      setLoading(true);
+      const apiClient = getApiClient();
+      const newPosts: SlideshowPost[] = [];
+      try {
+        if (content.selectedCommunities.length === 0) {
+          const cursor = getNextCursor();
+          const response = await apiClient.getPosts({
+            sort: 'Hot' as any,
+            limit: 40,
+            type_: 'All',
+            page_cursor: cursor,
+          });
+          if (response.nextCursor) {
+            setGlobalCursor(response.nextCursor as string);
+          } else {
+            setHasMore(false);
+          }
+          response.posts.forEach((post: PostView) => {
+            if (!post.post.url) return;
+            const url = post.post.url;
+            if (!url) return;
+            const isImage = isImageUrl(url);
+            const isVideo = isVideoUrl(url);
+            const isGif = isGifUrl(url);
+            const hasMedia =
+              (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                isImage) ||
+              (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                isVideo) ||
+              (content.filters.mediaTypes.includes(MediaType.GIF) && isGif);
+            if (!hasMedia) return;
+            if (post.counts.score < content.filters.minScore) return;
+            if (!content.filters.showNSFW && post.post.nsfw) return;
+            newPosts.push({
+              id: post.post.id.toString(),
+              postId: post.post.id,
+              title: post.post.name,
+              url: url,
+              mediaType: getMediaType(url),
+              thumbnailUrl: post.post.thumbnail_url,
+              creator: post.creator,
+              community: post.community,
+              score: post.counts.score,
+              published: post.post.published,
+              nsfw: post.post.nsfw,
+              starred: false,
+              viewed: false,
+            });
+          });
+        } else {
+          for (const community of content.selectedCommunities) {
+            const cursor = getNextCursor(community.id.toString());
+            const response = await apiClient.getPosts({
+              community_id: community.id,
+              sort: 'Hot' as any,
+              limit: 20,
+              type_: 'All',
+              page_cursor: cursor,
+            });
+            if (response.nextCursor) {
+              setPaginationCursor(
+                community.id.toString(),
+                response.nextCursor as string
+              );
+            } else {
+              // If one community has no next page, we set hasMore to false only if ALL are exhausted
+              // This simple approach: track absence and evaluate after loop
+            }
+            response.posts.forEach((post: PostView) => {
+              if (!post.post.url) return;
+              const url = post.post.url;
+              const isImage = isImageUrl(url);
+              const isVideo = isVideoUrl(url);
+              const isGif = isGifUrl(url);
+              const hasMedia =
+                (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                  isImage) ||
+                (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                  isVideo) ||
+                (content.filters.mediaTypes.includes(MediaType.GIF) && isGif);
+              if (!hasMedia) return;
+              if (post.counts.score < content.filters.minScore) return;
+              if (!content.filters.showNSFW && post.post.nsfw) return;
+              newPosts.push({
+                id: post.post.id.toString(),
+                postId: post.post.id,
+                title: post.post.name,
+                url: url,
+                mediaType: getMediaType(url),
+                thumbnailUrl: post.post.thumbnail_url,
+                creator: post.creator,
+                community: post.community,
+                score: post.counts.score,
+                published: post.post.published,
+                nsfw: post.post.nsfw,
+                starred: false,
+                viewed: false,
+              });
+            });
+          }
+        }
+        return newPosts;
+      } finally {
+        setLoading(false);
+      }
+    },
+    onSuccess: (newPosts) => {
+      if (!newPosts || newPosts.length === 0) {
+        // No new posts returned -> assume no more
+        setHasMore(false);
+        return;
+      }
+      // De-duplicate against existing posts
+      const existingIds = new Set(
+        useAppStore.getState().slideshow.posts.map((p) => p.id)
+      );
+      const filtered = newPosts.filter((p) => !existingIds.has(p.id));
+      if (filtered.length > 0) {
+        addPosts(filtered);
+      }
     },
   });
 }
@@ -391,19 +751,17 @@ export function useCheckCommunityMedia() {
         });
 
         // Check if any posts have media URLs
-        const hasMedia = response.some((post: PostView) => {
+        const hasMedia = response.posts.some((post: PostView) => {
           const url = post.post.url;
-          return url && /\.(jpe?g|png|gif|webp|avif|mp4|webm|ogg)$/i.test(url);
+          return url && (isImageUrl(url) || isVideoUrl(url) || isGifUrl(url));
         });
 
         return {
           hasMedia,
-          totalPosts: response.length,
-          mediaCount: response.filter((post: PostView) => {
+          totalPosts: response.posts.length,
+          mediaCount: response.posts.filter((post: PostView) => {
             const url = post.post.url;
-            return (
-              url && /\.(jpe?g|png|gif|webp|avif|mp4|webm|ogg)$/i.test(url)
-            );
+            return url && (isImageUrl(url) || isVideoUrl(url) || isGifUrl(url));
           }).length,
         };
       } catch (error) {
@@ -416,7 +774,66 @@ export function useCheckCommunityMedia() {
 
 // Utility function to determine media type
 function getMediaType(url: string): MediaType {
-  if (/\.gif$/i.test(url)) return MediaType.GIF;
-  if (/\.(mp4|webm|ogg|avi|mov)$/i.test(url)) return MediaType.VIDEO;
+  if (isGifUrl(url)) return MediaType.GIF;
+  if (isVideoUrl(url)) return MediaType.VIDEO;
   return MediaType.IMAGE;
+}
+
+// Enhanced media detection functions
+function isImageUrl(url: string): boolean {
+  // Traditional file extensions
+  if (/\.(jpe?g|png|gif|webp|avif|bmp|tiff?)$/i.test(url)) {
+    return true;
+  }
+
+  // Common image hosting patterns
+  const imageHostPatterns = [
+    /imgur\.com\/[a-zA-Z0-9]+/i, // imgur.com/abc123
+    /i\.imgur\.com\/[a-zA-Z0-9]+/i, // i.imgur.com/abc123
+    /redd\.it\/[a-zA-Z0-9]+/i, // i.redd.it/abc123
+    /preview\.redd\.it\/[a-zA-Z0-9]/i, // preview.redd.it/abc123
+    /pictrs\/image\/[a-zA-Z0-9-]+/i, // lemmy pictrs images
+    /images\.unsplash\.com/i, // unsplash
+    /cdn\.discordapp\.com.*\.(jpe?g|png|gif|webp)/i, // discord cdn
+    /media\.discordapp\.net.*\.(jpe?g|png|gif|webp)/i, // discord media
+  ];
+
+  return imageHostPatterns.some((pattern) => pattern.test(url));
+}
+
+function isVideoUrl(url: string): boolean {
+  // Traditional video file extensions
+  if (/\.(mp4|webm|ogg|avi|mov|mkv|m4v|3gp|flv)$/i.test(url)) {
+    return true;
+  }
+
+  // Common video hosting patterns
+  const videoHostPatterns = [
+    /v\.redd\.it\/[a-zA-Z0-9]+/i, // v.redd.it/abc123
+    /youtube\.com\/watch\?v=/i, // youtube
+    /youtu\.be\/[a-zA-Z0-9_-]+/i, // youtube short links
+    /vimeo\.com\/[0-9]+/i, // vimeo
+    /streamable\.com\/[a-zA-Z0-9]+/i, // streamable
+    /gfycat\.com\/[a-zA-Z0-9]+/i, // gfycat
+    /redgifs\.com\/watch\/[a-zA-Z0-9]+/i, // redgifs
+  ];
+
+  return videoHostPatterns.some((pattern) => pattern.test(url));
+}
+
+function isGifUrl(url: string): boolean {
+  // Traditional gif extension
+  if (/\.gif$/i.test(url)) {
+    return true;
+  }
+
+  // Gif hosting patterns
+  const gifHostPatterns = [
+    /giphy\.com\/gifs\/[a-zA-Z0-9-]+/i, // giphy
+    /tenor\.com\/view\/[a-zA-Z0-9-]+/i, // tenor
+    /imgur\.com\/[a-zA-Z0-9]+\.gif/i, // imgur gif direct
+    /i\.imgur\.com\/[a-zA-Z0-9]+\.gif/i, // imgur gif
+  ];
+
+  return gifHostPatterns.some((pattern) => pattern.test(url));
 }

@@ -1,10 +1,12 @@
 import type {
   GetPosts,
+  GetPostsResponse,
   GetCommunity,
   ListCommunities,
   PostView as LemmyPostView,
   Community as LemmyCommunity,
   Person as LemmyPerson,
+  PaginationCursor,
 } from 'lemmy-js-client';
 import { RateLimiter } from './rate-limiter';
 import { ErrorHandler } from './error-handler';
@@ -14,6 +16,13 @@ import type { PostView, Community, Person, SiteInfo } from '@types';
 
 // Re-export lemmy-js-client types
 export type { GetPosts as GetPostsParams } from 'lemmy-js-client';
+
+// Interface for paginated posts response
+export interface PaginatedPostsResponse {
+  posts: PostView[];
+  nextCursor?: PaginationCursor;
+  prevCursor?: PaginationCursor;
+}
 
 // Helper function to transform lemmy-js-client PostView to our PostView type
 function transformPostView(lemmyPost: LemmyPostView): PostView {
@@ -123,6 +132,7 @@ class CustomLemmyHttp {
   private headers: Record<string, string> = {};
   private isProxy: boolean = false;
   private serverParam: string | null = null;
+  private static REQUEST_TIMEOUT_MS = 10000; // Fallback; can be tuned
 
   constructor(baseUrl: string) {
     console.log('🔧 CustomLemmyHttp constructor called with baseUrl:', baseUrl);
@@ -154,6 +164,7 @@ class CustomLemmyHttp {
   }
 
   private async makeRequest<T>(endpoint: string, params?: any): Promise<T> {
+    const start = performance.now();
     let url = `${this.baseUrl}${endpoint}`;
 
     // Create URL object to handle query parameters properly
@@ -176,13 +187,39 @@ class CustomLemmyHttp {
     const finalUrl = urlObj.toString();
     console.log('📡 Making request to:', finalUrl);
 
-    const response = await fetch(finalUrl, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        ...this.headers,
-      },
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      if (!controller.signal.aborted) {
+        console.warn('⏰ Request timeout, aborting:', finalUrl);
+        controller.abort();
+      }
+    }, CustomLemmyHttp.REQUEST_TIMEOUT_MS);
+
+    let response: Response;
+    try {
+      response = await fetch(finalUrl, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          ...this.headers,
+        },
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const elapsed = Math.round(performance.now() - start);
+      if ((err as any)?.name === 'AbortError') {
+        console.error('🛑 Fetch aborted after timeout', { finalUrl, elapsed });
+        throw new Error(`Request timed out after ${elapsed}ms: ${finalUrl}`);
+      }
+      console.error('❌ Network fetch failed before response', {
+        finalUrl,
+        elapsed,
+        error: err,
+      });
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     console.log('📥 Response status:', response.status, response.statusText);
 
@@ -201,10 +238,12 @@ class CustomLemmyHttp {
 
     try {
       const jsonData = JSON.parse(responseText);
-      console.log('✅ Successfully parsed JSON response');
+      const elapsed = Math.round(performance.now() - start);
+      console.log('✅ Successfully parsed JSON response in', `${elapsed}ms`);
       return jsonData;
     } catch (parseError) {
-      console.log('❌ JSON parse error:', parseError);
+      const elapsed = Math.round(performance.now() - start);
+      console.log('❌ JSON parse error after', `${elapsed}ms`, parseError);
       console.log('📄 Full response body:', responseText);
       throw new Error(`Failed to parse JSON response: ${parseError}`);
     }
@@ -284,7 +323,9 @@ export class LemmyAPIClient {
   /**
    * Get posts with comprehensive filtering options
    */
-  async getPosts(params: Partial<GetPosts> = {}): Promise<PostView[]> {
+  async getPosts(
+    params: Partial<GetPosts> = {}
+  ): Promise<PaginatedPostsResponse> {
     // Validate community_id if provided
     if (
       params.community_id !== undefined &&
@@ -304,12 +345,16 @@ export class LemmyAPIClient {
 
     const finalParams = { ...defaultParams, ...params };
 
-    const response = await this.makeRequest(() =>
+    const response: GetPostsResponse = await this.makeRequest(() =>
       this.client.getPosts(finalParams)
     );
 
-    // Transform the response posts to our format
-    return response.posts?.map(transformPostView) || [];
+    // Transform the response posts to our format and return with pagination info
+    return {
+      posts: response.posts?.map(transformPostView) || [],
+      nextCursor: response.next_page,
+      prevCursor: response.prev_page,
+    };
   }
 
   /**
@@ -318,7 +363,7 @@ export class LemmyAPIClient {
   async getCommunityPosts(
     communityId: number,
     params: Omit<GetPosts, 'community_id'> = {}
-  ): Promise<PostView[]> {
+  ): Promise<PaginatedPostsResponse> {
     // Validate community ID before making API call
     if (!isValidCommunityId(communityId)) {
       logInvalidCommunityId(communityId, 'getCommunityPosts');
@@ -336,14 +381,14 @@ export class LemmyAPIClient {
   async getUserPosts(
     userId: number,
     params: Partial<GetPosts> = {}
-  ): Promise<PostView[]> {
+  ): Promise<PaginatedPostsResponse> {
     // For now, return empty array as the new API structure doesn't directly support this
     // This would need to be implemented differently in the real application
     console.warn('getUserPosts not fully implemented with new API structure', {
       userId,
       params,
     });
-    return [];
+    return { posts: [] };
   }
 
   /**

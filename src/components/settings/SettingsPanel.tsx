@@ -3,6 +3,9 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@stores/app-store';
 import { createLemmyApiClient } from '@services/lemmy-api-client';
 import { useCheckCommunityMedia } from '@hooks/useContent';
+import { MediaCache } from '@utils/media-cache';
+import { cacheUtils } from '@services/query-client';
+import { STORAGE_KEYS } from '@constants';
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -79,7 +82,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
   const {
     settings,
     updateSettings,
-    resetSettings,
+    reset,
     content,
     addCommunity,
     removeCommunity,
@@ -231,14 +234,49 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
     }
   };
 
-  const handleResetToDefaults = () => {
-    if (
-      confirm(
-        'Are you sure you want to reset all settings to their default values?'
-      )
-    ) {
-      resetSettings();
+  const handleResetToDefaults = async () => {
+    const confirmed = confirm(
+      'Reset everything to defaults and clear data?\n\nThis will:\n• Reset all settings\n• Remove all selected communities and users\n• Clear pagination and viewed history\n• Clear media/query caches and local storage'
+    );
+    if (!confirmed) return;
+
+    // 1) Reset entire store (settings + content + slideshow + UI)
+    reset();
+
+    // 2) Clear React Query cache
+    try {
+      await cacheUtils.clearCache();
+      console.log('[Settings] React Query cache cleared');
+    } catch (err) {
+      console.warn('[Settings] Failed clearing React Query cache', err);
     }
+
+    // 3) Clear media cache (memory + IndexedDB)
+    try {
+      await MediaCache.getInstance().clear();
+      console.log('[Settings] Media cache cleared');
+    } catch (err) {
+      console.warn('[Settings] Failed clearing media cache', err);
+    }
+
+    // 4) Remove app-specific localStorage keys
+    try {
+      Object.values(STORAGE_KEYS).forEach((k) => localStorage.removeItem(k));
+      console.log('[Settings] Local storage keys removed');
+    } catch (err) {
+      console.warn('[Settings] Failed clearing localStorage', err);
+    }
+
+    // 5) Clear sessionStorage
+    try {
+      if (typeof sessionStorage !== 'undefined') sessionStorage.clear();
+      console.log('[Settings] sessionStorage cleared');
+    } catch (err) {
+      console.warn('[Settings] Failed clearing sessionStorage', err);
+    }
+
+    // Optional: full reload to ensure clean state
+    // window.location.reload();
   };
 
   return (
@@ -308,6 +346,36 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
                     Automatically advance to next slide
                   </span>
                 </div>
+              </div>
+
+              <div>
+                <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
+                  Keep Screen Awake
+                </label>
+                <div className='flex items-center'>
+                  <input
+                    type='checkbox'
+                    checked={!!settings.display.keepScreenAwake}
+                    onChange={(e) =>
+                      updateSettings({
+                        display: {
+                          ...settings.display,
+                          keepScreenAwake: e.target.checked,
+                        },
+                      })
+                    }
+                    className='h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded'
+                  />
+                  <span className='ml-2 text-sm text-gray-700 dark:text-gray-300'>
+                    Prevent device from sleeping while playing (may use Wake
+                    Lock API)
+                  </span>
+                </div>
+                <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+                  Some browsers require interaction and may still dim the
+                  screen. If unsupported, a passive fallback attempts to keep
+                  the session active.
+                </p>
               </div>
 
               <div className='grid grid-cols-1 md:grid-cols-3 gap-4'>
