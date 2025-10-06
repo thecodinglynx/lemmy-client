@@ -227,16 +227,51 @@ export function useBatchPosts() {
         console.log(
           '[useBatchPosts] ✅ API client created, proceeding with fetch logic'
         );
+        // Determine ordering based on settings
+        const { settings } = useAppStore.getState();
+        const ordering = settings.orderingMode || 'hot';
+        const mapOrderingToSort = (mode: string): any => {
+          switch (mode) {
+            case 'new':
+              return 'New';
+            case 'active':
+              return 'Active';
+            case 'most-comments':
+              return 'MostComments';
+            case 'top-day':
+              return 'TopDay';
+            case 'top-week':
+              return 'TopWeek';
+            case 'top-month':
+              return 'TopMonth';
+            case 'top-year':
+              return 'TopYear';
+            case 'top-all':
+              return 'TopAll';
+            // 'random' and default fall back to 'Hot' as base sort before shuffle
+            case 'random':
+            case 'hot':
+            default:
+              return 'Hot';
+          }
+        };
+        const baseSort = mapOrderingToSort(ordering);
 
-        // If no communities are selected, fetch from the "All" feed as fallback
-        if (content.selectedCommunities.length === 0) {
-          console.log('📡 No communities selected, fetching from All feed...');
+        const blockedIds = new Set(
+          (content.blockedCommunities || []).map((c) => c.id)
+        );
+        const feedMode = settings.feedMode || 'random-communities';
+
+        if (feedMode === 'random-communities') {
+          console.log(
+            '📡 FeedMode=random-communities: fetching global feed sample'
+          );
 
           // Get the current cursor for the global feed
           const currentCursor = getNextCursor();
 
           const response = await apiClient.getPosts({
-            sort: 'Hot' as any,
+            sort: baseSort as any,
             limit: 50, // Get more posts from All feed for variety
             type_: 'All',
             page_cursor: currentCursor,
@@ -296,6 +331,9 @@ export function useBatchPosts() {
                 `   Final result: ${hasMedia && meetsMinScore && isNSFWAllowed}`
               );
 
+              // Blocked community exclusion
+              if (blockedIds.has(post.post.community_id)) return false;
+
               return hasMedia && meetsMinScore && isNSFWAllowed;
             })
             .map(
@@ -318,12 +356,20 @@ export function useBatchPosts() {
 
           allPosts.push(...posts);
           console.log(`📊 Loaded ${posts.length} posts from All feed`);
-        } else {
-          // Fetch from selected communities
-          console.log(
-            `📡 Fetching from ${content.selectedCommunities.length} selected communities...`
-          );
+        } else if (feedMode === 'communities') {
+          // Fetch from selected communities (if any selected)
+          if (content.selectedCommunities.length > 0) {
+            console.log(
+              `📡 Fetching from ${content.selectedCommunities.length} selected communities...`
+            );
+          }
           for (const community of content.selectedCommunities) {
+            if (blockedIds.has(community.id)) {
+              console.log(
+                `⛔ Skipping blocked community ${community.name} (${community.id})`
+              );
+              continue;
+            }
             console.log(
               `🏘️ Fetching posts from community: ${community.name} (ID: ${community.id})`
             );
@@ -333,9 +379,9 @@ export function useBatchPosts() {
             const communityFetchStart = performance.now();
             let communityErrored = false;
 
-            const response = await apiClient.getPosts({
+            let response = await apiClient.getPosts({
               community_id: community.id,
-              sort: 'Hot' as any,
+              sort: baseSort as any,
               limit: 20,
               type_: 'All',
               page_cursor: currentCursor,
@@ -371,7 +417,7 @@ export function useBatchPosts() {
               setHasMore(false);
             }
 
-            const posts = response.posts
+            let posts = response.posts
               .filter((post: PostView) => {
                 const hasUrl = !!post.post.url;
                 if (!hasUrl) {
@@ -413,6 +459,7 @@ export function useBatchPosts() {
                   `   - Final result: ${hasMedia && meetsMinScore && isNSFWAllowed}`
                 );
 
+                if (blockedIds.has(post.post.community_id)) return false;
                 return hasMedia && meetsMinScore && isNSFWAllowed;
               })
               .map(
@@ -433,6 +480,66 @@ export function useBatchPosts() {
                 })
               );
 
+            // Fallback: if this ordering produced 0 posts for this community, try Hot
+            if (
+              posts.length === 0 &&
+              ordering !== 'hot' &&
+              ordering !== 'random'
+            ) {
+              console.warn(
+                `[useBatchPosts] ⚠️ No media after filtering for community ${community.name} with sort ${baseSort}. Falling back to Hot.`
+              );
+              const fallbackResp = await apiClient.getPosts({
+                community_id: community.id,
+                sort: 'Hot' as any,
+                limit: 20,
+                type_: 'All',
+              });
+              posts = fallbackResp.posts
+                .filter((post: PostView) => {
+                  if (!post.post.url) return false;
+                  const url = post.post.url!;
+                  const isImage = isImageUrl(url);
+                  const isVideo = isVideoUrl(url);
+                  const isGif = isGifUrl(url);
+                  const hasMedia =
+                    (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                      isImage) ||
+                    (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                      isVideo) ||
+                    (content.filters.mediaTypes.includes(MediaType.GIF) &&
+                      isGif);
+                  const meetsMinScore =
+                    post.counts.score >= content.filters.minScore;
+                  const isNSFWAllowed =
+                    content.filters.showNSFW || !post.post.nsfw;
+                  if (blockedIds.has(post.post.community_id)) return false;
+                  return hasMedia && meetsMinScore && isNSFWAllowed;
+                })
+                .map(
+                  (post: PostView): SlideshowPost => ({
+                    id: post.post.id.toString(),
+                    postId: post.post.id,
+                    title: post.post.name,
+                    url: post.post.url!,
+                    mediaType: getMediaType(post.post.url!),
+                    thumbnailUrl: post.post.thumbnail_url,
+                    creator: post.creator,
+                    community: post.community,
+                    score: post.counts.score,
+                    published: post.post.published,
+                    nsfw: post.post.nsfw,
+                    starred: false,
+                    viewed: false,
+                  })
+                );
+              if (posts.length > 0) {
+                console.warn(
+                  `[useBatchPosts] ✅ Fallback Hot fetched ${posts.length} media posts for community ${community.name}`
+                );
+              }
+            }
+
             console.log(
               `✅ After filtering ${community.name}: ${posts.length} valid media posts`
             );
@@ -447,33 +554,191 @@ export function useBatchPosts() {
               );
             }
           }
+
+          // Supplement with selected users if any (communities mode)
+          if (content.selectedUsers.length > 0) {
+            console.log(
+              `👤 Fetching posts for ${content.selectedUsers.length} selected users (client-side filter)...`
+            );
+            // Single wider global fetch to reduce API calls
+            const response = await apiClient.getPosts({
+              sort: baseSort as any,
+              limit: 60,
+              type_: 'All',
+            });
+            const selectedIds = new Set(content.selectedUsers.map((u) => u.id));
+            const selectedNames = new Set(
+              content.selectedUsers.map((u) => u.name.toLowerCase())
+            );
+            const userPosts = response.posts
+              .filter((post: PostView) => {
+                if (!post.post.url) return false;
+                const creatorName = post.creator.name?.toLowerCase?.();
+                if (
+                  !selectedIds.has(post.post.creator_id) &&
+                  !(creatorName && selectedNames.has(creatorName))
+                )
+                  return false;
+                if (blockedIds.has(post.post.community_id)) return false;
+                const url = post.post.url!;
+                const isImage = isImageUrl(url);
+                const isVideo = isVideoUrl(url);
+                const isGif = isGifUrl(url);
+                const hasMedia =
+                  (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                    isImage) ||
+                  (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                    isVideo) ||
+                  (content.filters.mediaTypes.includes(MediaType.GIF) && isGif);
+                if (!hasMedia) return false;
+                if (post.counts.score < content.filters.minScore) return false;
+                if (!content.filters.showNSFW && post.post.nsfw) return false;
+                return true;
+              })
+              .map(
+                (post: PostView): SlideshowPost => ({
+                  id: post.post.id.toString(),
+                  postId: post.post.id,
+                  title: post.post.name,
+                  url: post.post.url!,
+                  mediaType: getMediaType(post.post.url!),
+                  thumbnailUrl: post.post.thumbnail_url,
+                  creator: post.creator,
+                  community: post.community,
+                  score: post.counts.score,
+                  published: post.post.published,
+                  nsfw: post.post.nsfw,
+                  starred: false,
+                  viewed: false,
+                })
+              );
+            if (
+              userPosts.length === 0 &&
+              ordering !== 'hot' &&
+              ordering !== 'random'
+            ) {
+              console.warn(
+                '[useBatchPosts] ⚠️ No media for selected users under chosen sort. Fallback to Hot.'
+              );
+              const fb = await apiClient.getPosts({
+                sort: 'Hot' as any,
+                limit: 60,
+                type_: 'All',
+              });
+              const fbUserPosts = fb.posts
+                .filter((post: PostView) => {
+                  if (!post.post.url) return false;
+                  const creatorName = post.creator.name?.toLowerCase?.();
+                  if (
+                    !selectedIds.has(post.post.creator_id) &&
+                    !(creatorName && selectedNames.has(creatorName))
+                  )
+                    return false;
+                  if (blockedIds.has(post.post.community_id)) return false;
+                  const url = post.post.url!;
+                  const isImage = isImageUrl(url);
+                  const isVideo = isVideoUrl(url);
+                  const isGif = isGifUrl(url);
+                  const hasMedia =
+                    (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                      isImage) ||
+                    (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                      isVideo) ||
+                    (content.filters.mediaTypes.includes(MediaType.GIF) &&
+                      isGif);
+                  if (!hasMedia) return false;
+                  if (post.counts.score < content.filters.minScore)
+                    return false;
+                  if (!content.filters.showNSFW && post.post.nsfw) return false;
+                  return true;
+                })
+                .map(
+                  (post: PostView): SlideshowPost => ({
+                    id: post.post.id.toString(),
+                    postId: post.post.id,
+                    title: post.post.name,
+                    url: post.post.url!,
+                    mediaType: getMediaType(post.post.url!),
+                    thumbnailUrl: post.post.thumbnail_url,
+                    creator: post.creator,
+                    community: post.community,
+                    score: post.counts.score,
+                    published: post.post.published,
+                    nsfw: post.post.nsfw,
+                    starred: false,
+                    viewed: false,
+                  })
+                );
+              if (fbUserPosts.length > 0) {
+                console.warn(
+                  `[useBatchPosts] ✅ Hot fallback yielded ${fbUserPosts.length} user media posts.`
+                );
+                allPosts.push(...fbUserPosts);
+              }
+            } else {
+              console.log(
+                `✅ After filtering selected users: ${userPosts.length} media posts`
+              );
+              allPosts.push(...userPosts);
+            }
+          }
         }
 
-        // Shuffle and deduplicate posts
+        // Deduplicate first
         const uniquePosts = allPosts.filter(
           (post, index, self) =>
             index === self.findIndex((p) => p.id === post.id)
         );
-
-        // Shuffle array
-        for (let i = uniquePosts.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [uniquePosts[i], uniquePosts[j]] = [uniquePosts[j], uniquePosts[i]];
+        // Apply ordering post-processing
+        if (ordering === 'random') {
+          for (let i = uniquePosts.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [uniquePosts[i], uniquePosts[j]] = [uniquePosts[j], uniquePosts[i]];
+          }
+        } else if (ordering === 'new') {
+          uniquePosts.sort(
+            (a, b) =>
+              new Date(b.published).getTime() - new Date(a.published).getTime()
+          );
+        } else if (ordering === 'active') {
+          // Lacking comment freshness metadata here; fall back to score tie-breaker
+          uniquePosts.sort(
+            (a, b) =>
+              b.score - a.score ||
+              new Date(b.published).getTime() - new Date(a.published).getTime()
+          );
+        } else if (
+          ordering.startsWith('top-') ||
+          ordering === 'most-comments' ||
+          ordering === 'hot'
+        ) {
+          // Preserve API order (already sorted) but ensure stable fallback tie-breakers
+          // No resort needed; optionally could enforce deterministic tie-break
         }
 
         console.log(
           `📊 Final result: ${uniquePosts.length} unique posts after community fetch`
         );
+        if (feedMode === 'users' && uniquePosts.length === 0) {
+          console.warn(
+            '[useBatchPosts] Users-only mode produced 0 posts. Check if selected user IDs match API person_id and that their recent posts include media URLs.'
+          );
+        }
 
         // If we ended up with 0 or 1 posts after selecting communities, fetch supplemental content from global feed
-        if (content.selectedCommunities.length > 0 && uniquePosts.length <= 1) {
+        if (
+          feedMode !== 'users' && // In users-only mode we rely on per-user pagination, skip global supplement
+          (content.selectedCommunities.length > 0 ||
+            content.selectedUsers.length > 0) &&
+          uniquePosts.length <= 1
+        ) {
           console.warn(
             '[useBatchPosts] ⚠️ Insufficient media from selected communities (<=1). Fetching supplemental global feed posts.'
           );
           try {
             const currentCursor = getNextCursor();
             const response = await getApiClient().getPosts({
-              sort: 'Hot' as any,
+              sort: baseSort as any,
               limit: 40,
               type_: 'All',
               page_cursor: currentCursor,
@@ -481,6 +746,7 @@ export function useBatchPosts() {
             const supplemental = response.posts
               .filter((post: PostView) => {
                 if (!post.post.url) return false;
+                if (blockedIds.has(post.post.community_id)) return false;
                 const url = post.post.url;
                 return (
                   (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
@@ -530,7 +796,9 @@ export function useBatchPosts() {
 
         // Fallback: if we selected communities but ended with zero posts (over-filter / no media)
         if (
-          content.selectedCommunities.length > 0 &&
+          feedMode !== 'users' &&
+          (content.selectedCommunities.length > 0 ||
+            content.selectedUsers.length > 0) &&
           uniquePosts.length === 0
         ) {
           console.warn(
@@ -539,7 +807,7 @@ export function useBatchPosts() {
           try {
             const currentCursor = getNextCursor();
             const response = await getApiClient().getPosts({
-              sort: 'Hot' as any,
+              sort: baseSort as any,
               limit: 30,
               type_: 'All',
               page_cursor: currentCursor,
@@ -547,6 +815,7 @@ export function useBatchPosts() {
             const fallbackPosts = response.posts
               .filter((post: PostView) => {
                 if (!post.post.url) return false;
+                if (blockedIds.has(post.post.community_id)) return false;
                 const url = post.post.url;
                 return (
                   (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
@@ -617,10 +886,108 @@ export function useLoadMorePosts() {
       const apiClient = getApiClient();
       const newPosts: SlideshowPost[] = [];
       try {
-        if (content.selectedCommunities.length === 0) {
+        const { settings } = useAppStore.getState();
+        const ordering = settings.orderingMode || 'hot';
+        const mapOrderingToSort = (mode: string): any => {
+          switch (mode) {
+            case 'new':
+              return 'New';
+            case 'active':
+              return 'Active';
+            case 'most-comments':
+              return 'MostComments';
+            case 'top-day':
+              return 'TopDay';
+            case 'top-week':
+              return 'TopWeek';
+            case 'top-month':
+              return 'TopMonth';
+            case 'top-year':
+              return 'TopYear';
+            case 'top-all':
+              return 'TopAll';
+            case 'random':
+            case 'hot':
+            default:
+              return 'Hot';
+          }
+        };
+        const baseSort = mapOrderingToSort(ordering);
+        const blockedIds = new Set(
+          (content.blockedCommunities || []).map((c) => c.id)
+        );
+        const feedMode = settings.feedMode || 'random-communities';
+
+        // Users-only mode branch
+        if (feedMode === 'users') {
+          if (content.selectedUsers.length === 0) {
+            setHasMore(false);
+            return [] as SlideshowPost[];
+          }
+          const selectedIds = new Set(content.selectedUsers.map((u) => u.id));
+          const selectedNames = new Set(
+            content.selectedUsers.map((u) => u.name.toLowerCase())
+          );
           const cursor = getNextCursor();
           const response = await apiClient.getPosts({
-            sort: 'Hot' as any,
+            sort: baseSort as any,
+            limit: 80,
+            type_: 'All',
+            page_cursor: cursor,
+          });
+          if (response.nextCursor) {
+            setGlobalCursor(response.nextCursor as string);
+          } else {
+            setHasMore(false);
+          }
+          response.posts.forEach((post: PostView) => {
+            if (!post.post.url) return;
+            const creatorName = post.creator.name?.toLowerCase?.();
+            if (
+              !selectedIds.has(post.post.creator_id) &&
+              !(creatorName && selectedNames.has(creatorName))
+            )
+              return;
+            if (blockedIds.has(post.post.community_id)) return;
+            const url = post.post.url;
+            const isImage = isImageUrl(url);
+            const isVideo = isVideoUrl(url);
+            const isGif = isGifUrl(url);
+            const hasMedia =
+              (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                isImage) ||
+              (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                isVideo) ||
+              (content.filters.mediaTypes.includes(MediaType.GIF) && isGif);
+            if (!hasMedia) return;
+            if (post.counts.score < content.filters.minScore) return;
+            if (!content.filters.showNSFW && post.post.nsfw) return;
+            newPosts.push({
+              id: post.post.id.toString(),
+              postId: post.post.id,
+              title: post.post.name,
+              url: url!,
+              mediaType: getMediaType(url!),
+              thumbnailUrl: post.post.thumbnail_url,
+              creator: post.creator,
+              community: post.community,
+              score: post.counts.score,
+              published: post.post.published,
+              nsfw: post.post.nsfw,
+              starred: false,
+              viewed: false,
+            });
+          });
+          return newPosts;
+        }
+
+        if (
+          content.selectedCommunities.length === 0 &&
+          content.selectedUsers.length === 0
+        ) {
+          const cursor = getNextCursor();
+          const response = await apiClient.getPosts({
+            sort: baseSort as any,
             limit: 40,
             type_: 'All',
             page_cursor: cursor,
@@ -632,6 +999,7 @@ export function useLoadMorePosts() {
           }
           response.posts.forEach((post: PostView) => {
             if (!post.post.url) return;
+            if (blockedIds.has(post.post.community_id)) return;
             const url = post.post.url;
             if (!url) return;
             const isImage = isImageUrl(url);
@@ -663,11 +1031,18 @@ export function useLoadMorePosts() {
             });
           });
         } else {
+          // Communities fetch (if any)
           for (const community of content.selectedCommunities) {
+            if (blockedIds.has(community.id)) {
+              console.log(
+                `⛔ (loadMore) Skipping blocked community ${community.name} (${community.id})`
+              );
+              continue;
+            }
             const cursor = getNextCursor(community.id.toString());
-            const response = await apiClient.getPosts({
+            let response = await apiClient.getPosts({
               community_id: community.id,
-              sort: 'Hot' as any,
+              sort: baseSort as any,
               limit: 20,
               type_: 'All',
               page_cursor: cursor,
@@ -681,8 +1056,9 @@ export function useLoadMorePosts() {
               // If one community has no next page, we set hasMore to false only if ALL are exhausted
               // This simple approach: track absence and evaluate after loop
             }
-            response.posts.forEach((post: PostView) => {
-              if (!post.post.url) return;
+            let communityPosts = response.posts.filter((post: PostView) => {
+              if (!post.post.url) return false;
+              if (blockedIds.has(post.post.community_id)) return false;
               const url = post.post.url;
               const isImage = isImageUrl(url);
               const isVideo = isVideoUrl(url);
@@ -693,9 +1069,126 @@ export function useLoadMorePosts() {
                 (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
                   isVideo) ||
                 (content.filters.mediaTypes.includes(MediaType.GIF) && isGif);
-              if (!hasMedia) return;
-              if (post.counts.score < content.filters.minScore) return;
-              if (!content.filters.showNSFW && post.post.nsfw) return;
+              if (!hasMedia) return false;
+              if (post.counts.score < content.filters.minScore) return false;
+              if (!content.filters.showNSFW && post.post.nsfw) return false;
+              return true;
+            });
+            // Fallback to Hot if empty under non-hot/random ordering
+            if (
+              communityPosts.length === 0 &&
+              ordering !== 'hot' &&
+              ordering !== 'random'
+            ) {
+              console.warn(
+                `[useLoadMorePosts] ⚠️ No posts for community ${community.name} under ${baseSort}. Fallback to Hot.`
+              );
+              const fb = await apiClient.getPosts({
+                community_id: community.id,
+                sort: 'Hot' as any,
+                limit: 20,
+                type_: 'All',
+              });
+              communityPosts = fb.posts.filter((post: PostView) => {
+                if (!post.post.url) return false;
+                if (blockedIds.has(post.post.community_id)) return false;
+                const url = post.post.url;
+                const isImage = isImageUrl(url);
+                const isVideo = isVideoUrl(url);
+                const isGif = isGifUrl(url);
+                const hasMedia =
+                  (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                    isImage) ||
+                  (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                    isVideo) ||
+                  (content.filters.mediaTypes.includes(MediaType.GIF) && isGif);
+                if (!hasMedia) return false;
+                if (post.counts.score < content.filters.minScore) return false;
+                if (!content.filters.showNSFW && post.post.nsfw) return false;
+                return true;
+              });
+            }
+            communityPosts.forEach((post: PostView) => {
+              const url = post.post.url!;
+              newPosts.push({
+                id: post.post.id.toString(),
+                postId: post.post.id,
+                title: post.post.name,
+                url: url,
+                mediaType: getMediaType(url),
+                thumbnailUrl: post.post.thumbnail_url,
+                creator: post.creator,
+                community: post.community,
+                score: post.counts.score,
+                published: post.post.published,
+                nsfw: post.post.nsfw,
+                starred: false,
+                viewed: false,
+              });
+            });
+          }
+          // Users fetch (client-side filter) if users selected
+          if (content.selectedUsers.length > 0) {
+            const response = await apiClient.getPosts({
+              sort: baseSort as any,
+              limit: 50,
+              type_: 'All',
+            });
+            const selectedIds = new Set(content.selectedUsers.map((u) => u.id));
+            let userPosts = response.posts.filter((post: PostView) => {
+              if (!post.post.url) return false;
+              if (blockedIds.has(post.post.community_id)) return false;
+              if (!selectedIds.has(post.post.creator_id)) return false;
+              const url = post.post.url;
+              const isImage = isImageUrl(url);
+              const isVideo = isVideoUrl(url);
+              const isGif = isGifUrl(url);
+              const hasMedia =
+                (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                  isImage) ||
+                (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                  isVideo) ||
+                (content.filters.mediaTypes.includes(MediaType.GIF) && isGif);
+              if (!hasMedia) return false;
+              if (post.counts.score < content.filters.minScore) return false;
+              if (!content.filters.showNSFW && post.post.nsfw) return false;
+              return true;
+            });
+            if (
+              userPosts.length === 0 &&
+              ordering !== 'hot' &&
+              ordering !== 'random'
+            ) {
+              console.warn(
+                '[useLoadMorePosts] ⚠️ No filtered user posts under current sort. Fallback to Hot.'
+              );
+              const fb = await apiClient.getPosts({
+                sort: 'Hot' as any,
+                limit: 50,
+                type_: 'All',
+              });
+              userPosts = fb.posts.filter((post: PostView) => {
+                if (!post.post.url) return false;
+                if (blockedIds.has(post.post.community_id)) return false;
+                if (!selectedIds.has(post.post.creator_id)) return false;
+                const url = post.post.url;
+                const isImage = isImageUrl(url);
+                const isVideo = isVideoUrl(url);
+                const isGif = isGifUrl(url);
+                const hasMedia =
+                  (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                    isImage) ||
+                  (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                    isVideo) ||
+                  (content.filters.mediaTypes.includes(MediaType.GIF) && isGif);
+                if (!hasMedia) return false;
+                if (post.counts.score < content.filters.minScore) return false;
+                if (!content.filters.showNSFW && post.post.nsfw) return false;
+                return true;
+              });
+            }
+            userPosts.forEach((post: PostView) => {
+              const url = post.post.url!;
               newPosts.push({
                 id: post.post.id.toString(),
                 postId: post.post.id,
@@ -732,6 +1225,26 @@ export function useLoadMorePosts() {
       const filtered = newPosts.filter((p) => !existingIds.has(p.id));
       if (filtered.length > 0) {
         addPosts(filtered);
+        // If ordering is random, reshuffle appended posts lightly (optional: only shuffle new subset)
+        const { settings } = useAppStore.getState();
+        if (settings.orderingMode === 'random') {
+          const state = useAppStore.getState();
+          const posts = [...state.slideshow.posts];
+          for (let i = posts.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [posts[i], posts[j]] = [posts[j], posts[i]];
+          }
+          state.setPosts(posts);
+        } else if (settings.orderingMode === 'new') {
+          const state = useAppStore.getState();
+          state.setPosts(
+            [...state.slideshow.posts].sort(
+              (a, b) =>
+                new Date(b.published).getTime() -
+                new Date(a.published).getTime()
+            )
+          );
+        }
       }
     },
   });

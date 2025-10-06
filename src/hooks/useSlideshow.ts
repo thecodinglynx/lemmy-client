@@ -174,44 +174,26 @@ export function useSlideshow() {
   }, []);
 
   // Star/unstar posts
-  const toggleStar = useCallback(
-    (postId: string) => {
-      const starredPosts = JSON.parse(
-        localStorage.getItem('lemmy-slideshow-starred') || '[]'
-      );
-      const isStarred = starredPosts.includes(postId);
-
-      if (isStarred) {
-        const index = starredPosts.indexOf(postId);
-        if (index > -1) {
-          starredPosts.splice(index, 1);
-        }
-      } else {
-        starredPosts.push(postId);
-      }
-
-      localStorage.setItem(
-        'lemmy-slideshow-starred',
-        JSON.stringify(starredPosts)
-      );
-
-      // Update the post in the current slideshow
-      const updatedPosts = slideshow.posts.map((post) =>
-        post.id === postId ? { ...post, starred: !isStarred } : post
-      );
-      setPosts(updatedPosts);
-    },
-    [slideshow.posts, setPosts]
-  );
+  const toggleStar = useCallback((postId: string) => {
+    const state = useAppStore.getState();
+    const post = state.slideshow.posts.find((p) => p.id === postId);
+    if (!post) return;
+    state.toggleLike(post);
+    // Reflect liked state in slideshow.posts visually by marking starred
+    const liked = !!state.content.likedPosts?.[postId];
+    const updated = state.slideshow.posts.map((p) =>
+      p.id === postId ? { ...p, starred: liked } : p
+    );
+    state.setPosts(updated);
+  }, []);
 
   // Load starred status for posts
   const loadStarredStatus = useCallback((posts: SlideshowPost[]) => {
-    const starredPosts = JSON.parse(
-      localStorage.getItem('lemmy-slideshow-starred') || '[]'
-    );
+    const { content } = useAppStore.getState();
+    const likedMap = content.likedPosts || {};
     return posts.map((post) => ({
       ...post,
-      starred: starredPosts.includes(post.id),
+      starred: !!likedMap[post.id],
     }));
   }, []);
 

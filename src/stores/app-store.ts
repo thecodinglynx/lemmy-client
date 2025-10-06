@@ -39,6 +39,8 @@ const initialSlideshowState: SlideshowState = {
 const initialContentState: ContentState = {
   selectedCommunities: [],
   selectedUsers: [],
+  // Permanently excluded communities (user never wants to see content from these)
+  blockedCommunities: [],
   filters: {
     mediaTypes: ['image', 'video', 'gif'] as MediaType[],
     showNSFW: false, // User can now control this via UI
@@ -109,6 +111,12 @@ const initialSettingsState: SettingsState = {
     maxCacheSize: 100,
   },
   contentSource: 'feed',
+  orderingMode: 'hot',
+  // feedMode controls how feed sourcing works when contentSource === 'feed'
+  // 'random-communities' -> random public communities sample
+  // 'communities' -> only user-selected communities
+  // 'users' -> only user-selected users (client-side filtered)
+  feedMode: 'random-communities' as any,
 };
 
 const initialUIState: UIState = {
@@ -142,6 +150,9 @@ interface AppStore extends AppState {
   removeCommunity: (communityId: number) => void;
   addUser: (user: Person) => void;
   removeUser: (userId: number) => void;
+  // Community block list actions
+  blockCommunity: (community: Community) => void;
+  unblockCommunity: (communityId: number) => void;
   setFilters: (filters: Partial<ContentState['filters']>) => void;
   addToQueue: (posts: SlideshowPost[]) => void;
   markAsViewed: (postId: string) => void;
@@ -344,6 +355,44 @@ export const useAppStore = create<AppStore>()(
             );
           }),
 
+        // Block community (permanent exclusion)
+        blockCommunity: (community: Community) =>
+          set((state) => {
+            const alreadyBlocked = state.content.blockedCommunities?.some(
+              (c) => c.id === community.id
+            );
+            if (!alreadyBlocked) {
+              state.content.blockedCommunities?.push(community);
+              // Also remove from selectedCommunities if present
+              state.content.selectedCommunities =
+                state.content.selectedCommunities.filter(
+                  (c) => c.id !== community.id
+                );
+              state.addNotification?.(
+                `Blocked community c/${community.name}`,
+                'warning'
+              );
+            } else {
+              state.addNotification?.(
+                `Community c/${community.name} already blocked`,
+                'info'
+              );
+            }
+          }),
+
+        // Unblock community
+        unblockCommunity: (communityId: number) =>
+          set((state) => {
+            const before = state.content.blockedCommunities?.length || 0;
+            state.content.blockedCommunities = (
+              state.content.blockedCommunities || []
+            ).filter((c) => c.id !== communityId);
+            const after = state.content.blockedCommunities.length;
+            if (after < before) {
+              state.addNotification?.('Unblocked community', 'success');
+            }
+          }),
+
         setFilters: (filters: Partial<ContentState['filters']>) =>
           set((state) => {
             state.content.filters = { ...state.content.filters, ...filters };
@@ -385,6 +434,78 @@ export const useAppStore = create<AppStore>()(
         setHasMore: (hasMore: boolean) =>
           set((state) => {
             state.content.hasMore = hasMore;
+          }),
+
+        // Like / Unlike handling
+        toggleLike: (post: SlideshowPost) =>
+          set((state) => {
+            if (!state.content.likedPosts) state.content.likedPosts = {};
+            const existing = state.content.likedPosts[post.id];
+            const isLiking = !existing;
+
+            if (isLiking) {
+              // Add to liked map with timestamp snapshot
+              state.content.likedPosts[post.id] = {
+                ...post,
+                starred: true, // ensure snapshot reflects liked state
+                likedAt: Date.now(),
+              } as any;
+              state.addNotification?.('Added to liked', 'success');
+            } else {
+              // Remove from liked map
+              delete state.content.likedPosts[post.id];
+              state.addNotification?.('Removed from liked', 'info');
+            }
+
+            // Optimistically update the current slideshow.posts array
+            if (Array.isArray(state.slideshow.posts)) {
+              for (let i = 0; i < state.slideshow.posts.length; i++) {
+                if (state.slideshow.posts[i].id === post.id) {
+                  state.slideshow.posts[i].starred = isLiking; // mutate in-place (immer handled)
+                  break;
+                }
+              }
+            }
+
+            // If currently viewing liked content, rebuild ordered list from liked items (all starred=true)
+            if (state.settings.contentSource === 'liked') {
+              state.slideshow.posts = Object.values(state.content.likedPosts)
+                .sort((a: any, b: any) => b.likedAt - a.likedAt)
+                .map((p: any) => ({ ...p, starred: true }));
+              // Adjust index to remain within bounds
+              state.slideshow.currentIndex = Math.min(
+                state.slideshow.currentIndex,
+                Math.max(state.slideshow.posts.length - 1, 0)
+              );
+            }
+          }),
+
+        removeLike: (postId: string) =>
+          set((state) => {
+            if (!state.content.likedPosts) return;
+            if (state.content.likedPosts[postId]) {
+              delete state.content.likedPosts[postId];
+              if (state.settings.contentSource === 'liked') {
+                state.slideshow.posts = Object.values(
+                  state.content.likedPosts
+                ).sort((a: any, b: any) => b.likedAt - a.likedAt);
+                state.slideshow.currentIndex = Math.min(
+                  state.slideshow.currentIndex,
+                  Math.max(state.slideshow.posts.length - 1, 0)
+                );
+              }
+            }
+          }),
+
+        loadLikedIntoSlideshow: () =>
+          set((state) => {
+            const liked = state.content.likedPosts || {};
+            state.slideshow.posts = Object.values(liked).sort(
+              (a: any, b: any) => b.likedAt - a.likedAt
+            );
+            state.slideshow.currentIndex = 0;
+            state.slideshow.isPlaying = false;
+            state.content.hasMore = false; // No infinite loading for liked
           }),
 
         // Pagination actions
@@ -581,6 +702,10 @@ export const useAppStore = create<AppStore>()(
             if (!state.content.viewedPosts) {
               state.content.viewedPosts = new Set();
             }
+            // Initialize blockedCommunities if missing
+            if (!state.content.blockedCommunities) {
+              state.content.blockedCommunities = [];
+            }
             // If somehow persisted as plain array and not yet converted
             if (Array.isArray(state.content.viewedPosts)) {
               state.content.viewedPosts = new Set(
@@ -602,6 +727,18 @@ export const useAppStore = create<AppStore>()(
             // Detect if mobile
             if (typeof window !== 'undefined') {
               state.ui.isMobile = window.innerWidth <= 768;
+            }
+
+            // Initialize likedPosts map if missing
+            if (!state.content.likedPosts) {
+              state.content.likedPosts = {};
+            }
+            // Backfill settings.contentSource default
+            if (!state.settings.contentSource) {
+              state.settings.contentSource = 'feed';
+            }
+            if (!state.settings.feedMode) {
+              (state.settings as any).feedMode = 'random-communities';
             }
           });
         },
@@ -657,9 +794,18 @@ export const useAppStore = create<AppStore>()(
               setg.display = { ...initialSettingsState.display };
             else if (typeof setg.display.keepScreenAwake === 'undefined')
               setg.display.keepScreenAwake = false;
+            if (!setg.contentSource) setg.contentSource = 'feed';
+            if (!setg.orderingMode) setg.orderingMode = 'hot';
+            if (!setg.feedMode) (setg as any).feedMode = 'random-communities';
           }
           if (!persistedState.ui) {
             persistedState.ui = { ...initialUIState };
+          }
+          if (!persistedState.content.likedPosts) {
+            persistedState.content.likedPosts = {};
+          }
+          if (!persistedState.content.blockedCommunities) {
+            persistedState.content.blockedCommunities = [];
           }
           return persistedState;
         },

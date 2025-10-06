@@ -37,7 +37,11 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     content: { selectedCommunities },
     settings: {
       display: { keepScreenAwake = false } = { keepScreenAwake: false },
+      contentSource = 'feed',
+      orderingMode = 'hot',
     },
+    toggleLike,
+    loadLikedIntoSlideshow,
   } = useAppStore();
 
   // Current post data
@@ -268,8 +272,10 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     getRandomizedFreshContent();
     console.log('[SlideshowView] 🎲 Randomized pagination cursors');
 
-    // If we have selected communities, load posts from them
-    if (selectedCommunities && selectedCommunities.length > 0) {
+    if (contentSource === 'liked') {
+      console.log('[SlideshowView] Loading liked posts into slideshow');
+      loadLikedIntoSlideshow();
+    } else if (selectedCommunities && selectedCommunities.length > 0) {
       console.log(
         '[SlideshowView] Fetching initial posts from selected communities'
       );
@@ -300,7 +306,7 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     }, 2500);
 
     return () => clearTimeout(watchdog);
-  }, []); // Empty dependency array - run only once on mount
+  }, [contentSource, loadLikedIntoSlideshow]); // run once unless source mode changes to liked first load
 
   // Reload content when selected communities change
   useEffect(() => {
@@ -308,11 +314,54 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     if (!hasTriedInitialLoad.current) return;
 
     // Clear existing posts before loading new ones
-    slideshow.resetSlideshow();
-
-    // Load content from updated communities
-    batchPostsMutation.mutate();
+    if (contentSource === 'feed') {
+      slideshow.resetSlideshow();
+      batchPostsMutation.mutate();
+    }
   }, [selectedCommunities]); // Only depend on selectedCommunities
+
+  // React to content source switching (feed <-> liked) after initial mount
+  useEffect(() => {
+    if (!hasTriedInitialLoad.current) return; // skip until first load done
+
+    // Avoid redundant work if posts already represent desired source
+    const state = useAppStore.getState();
+    const isLikedMode = contentSource === 'liked';
+
+    if (isLikedMode) {
+      // If already showing liked posts (all starred + hasMore false), skip
+      const allStarred = state.slideshow.posts.every((p) => p.starred);
+      if (!(allStarred && state.content.hasMore === false)) {
+        loadLikedIntoSlideshow();
+      }
+    } else {
+      // Feed mode
+      if (state.content.hasMore === false) {
+        state.setHasMore(true);
+      }
+      // Only refetch if we are currently showing 0 posts or all posts are starred (came from liked)
+      const posts = state.slideshow.posts;
+      const shouldRefetch =
+        posts.length === 0 || posts.every((p) => p.starred === true);
+      if (shouldRefetch) {
+        slideshow.resetSlideshow();
+        batchPostsMutation.mutate();
+      }
+    }
+  }, [contentSource]);
+
+  // Refetch when ordering mode changes (feed only)
+  useEffect(() => {
+    if (!hasTriedInitialLoad.current) return;
+    if (contentSource !== 'feed') return;
+    console.log(
+      '[SlideshowView] 🔁 Ordering mode changed to',
+      orderingMode,
+      '— refetching feed'
+    );
+    slideshow.resetSlideshow();
+    batchPostsMutation.mutate();
+  }, [orderingMode]);
 
   // Auto-start slideshow when content is available and auto-advance is enabled
   useEffect(() => {
@@ -404,6 +453,7 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     const currentIndex = state.slideshow?.currentIndex ?? 0;
     const threshold = 3; // when user is within last 3 items
     if (
+      contentSource === 'feed' &&
       hasMore &&
       !loading &&
       posts.length > 0 &&
@@ -412,7 +462,7 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
       // Trigger load more
       loadMoreMutation.mutate();
     }
-  }, [slideshow.slideshow.currentIndex, loadMoreMutation]);
+  }, [slideshow.slideshow.currentIndex, loadMoreMutation, contentSource]);
 
   // Stuck playback watchdog: if we have >1 posts, playing is enabled, but index stays at 0 for too long, attempt a nudge
   useEffect(() => {
@@ -511,6 +561,34 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
 
   // Empty state
   if (!hasContent) {
+    if (contentSource === 'liked') {
+      return (
+        <div
+          className={`slideshow-container ${className} bg-black flex items-center justify-center min-h-screen`}
+        >
+          <div className='text-center text-white max-w-md px-6'>
+            <h2 className='text-2xl font-bold mb-4'>No liked media yet</h2>
+            <p className='text-gray-300 mb-4'>
+              Like some media while browsing the feed, then switch back to Liked
+              Mode here to view your curated collection.
+            </p>
+            <Link
+              to='/settings'
+              className='inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors'
+            >
+              <svg className='w-5 h-5' fill='currentColor' viewBox='0 0 20 20'>
+                <path
+                  fillRule='evenodd'
+                  d='M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z'
+                  clipRule='evenodd'
+                />
+              </svg>
+              Back to Settings
+            </Link>
+          </div>
+        </div>
+      );
+    }
     return (
       <div
         className={`slideshow-container ${className} bg-black flex items-center justify-center min-h-screen`}
@@ -678,9 +756,89 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
               {currentPost.title}
             </h3>
             <div className='text-sm text-gray-300'>
-              <span>r/{currentPost.community.name}</span>
+              <button
+                type='button'
+                onClick={() => {
+                  try {
+                    const exists = selectedCommunities.some(
+                      (c) => c.id === currentPost.community.id
+                    );
+                    if (exists) {
+                      useAppStore
+                        .getState()
+                        .addNotification?.(
+                          `Community r/${currentPost.community.name} already added`,
+                          'info'
+                        );
+                      return;
+                    }
+                    useAppStore.getState().addCommunity(currentPost.community);
+                    useAppStore
+                      .getState()
+                      .addNotification?.(
+                        `Added r/${currentPost.community.name}`,
+                        'success'
+                      );
+                  } catch (err) {
+                    console.warn('Failed adding community from click', err);
+                  }
+                }}
+                className='underline decoration-dotted underline-offset-2 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded-sm'
+                aria-label={`Add community r/${currentPost.community.name} to selection`}
+                title='Click to add this community to your selection'
+              >
+                r/{currentPost.community.name}
+              </button>
+              <button
+                type='button'
+                onClick={() => {
+                  const { blockCommunity, addNotification } =
+                    useAppStore.getState();
+                  blockCommunity(currentPost.community);
+                  addNotification?.(
+                    `Blocked r/${currentPost.community.name}`,
+                    'warning'
+                  );
+                }}
+                className='ml-2 text-xs px-2 py-0.5 rounded bg-red-600/70 hover:bg-red-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400'
+                aria-label={`Block community r/${currentPost.community.name}`}
+                title='Block this community'
+              >
+                Block
+              </button>
               <span className='mx-2'>•</span>
-              <span>u/{currentPost.creator.name}</span>
+              <button
+                type='button'
+                onClick={() => {
+                  try {
+                    const state = useAppStore.getState();
+                    const exists = state.content.selectedUsers.some(
+                      (u) =>
+                        u.name.toLowerCase() ===
+                        currentPost.creator.name.toLowerCase()
+                    );
+                    if (exists) {
+                      state.addNotification?.(
+                        `User u/${currentPost.creator.name} already added`,
+                        'info'
+                      );
+                      return;
+                    }
+                    state.addUser(currentPost.creator as any);
+                    state.addNotification?.(
+                      `Added u/${currentPost.creator.name}`,
+                      'success'
+                    );
+                  } catch (err) {
+                    console.warn('Failed adding user from click', err);
+                  }
+                }}
+                className='underline decoration-dotted underline-offset-2 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded-sm'
+                aria-label={`Add user u/${currentPost.creator.name} to selection`}
+                title='Click to add this user to your selection'
+              >
+                u/{currentPost.creator.name}
+              </button>
               <span className='mx-2'>•</span>
               <span>{currentPost.score} points</span>
             </div>
@@ -817,6 +975,42 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
 
           {!isMobile && (
             <button
+              onClick={() => currentPost && toggleLike(currentPost)}
+              className='text-white hover:text-pink-400'
+              aria-label={currentPost?.starred ? 'Unlike media' : 'Like media'}
+              title={currentPost?.starred ? 'Unlike' : 'Like'}
+            >
+              {currentPost?.starred ? (
+                <svg
+                  className='w-6 h-6'
+                  viewBox='0 0 20 20'
+                  fill='currentColor'
+                >
+                  <path d='M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 18.657l-6.828-6.829a4 4 0 010-5.656z' />
+                </svg>
+              ) : (
+                <svg
+                  className='w-6 h-6'
+                  viewBox='0 0 24 24'
+                  fill='none'
+                  stroke='currentColor'
+                  strokeWidth='2'
+                  strokeLinecap='round'
+                  strokeLinejoin='round'
+                >
+                  <path d='M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.6l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 000-7.8z' />
+                </svg>
+              )}
+            </button>
+          )}
+
+          {!isMobile && contentSource === 'liked' && (
+            <div className='text-xs text-gray-400 font-medium tracking-wide'>
+              Liked Mode
+            </div>
+          )}
+          {!isMobile && contentSource === 'feed' && (
+            <button
               onClick={() => {
                 console.log('🔄 User requested fresh content');
                 const { getRandomizedFreshContent } = useAppStore.getState();
@@ -893,6 +1087,37 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
             showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
           } flex flex-col gap-2`}
         >
+          {/* Like button (mobile) */}
+          <button
+            onClick={() => {
+              if (currentPost) {
+                toggleLike(currentPost);
+                // Keep controls visible / reset auto-hide timer after liking
+                showControlsTemporarily();
+              }
+            }}
+            className='text-white hover:text-pink-400 active:text-pink-300 active:scale-95 p-3 bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full transition-all duration-150 touch-manipulation'
+            aria-label={currentPost?.starred ? 'Unlike media' : 'Like media'}
+            title={currentPost?.starred ? 'Unlike' : 'Like'}
+          >
+            {currentPost?.starred ? (
+              <svg className='w-6 h-6' viewBox='0 0 20 20' fill='currentColor'>
+                <path d='M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 18.657l-6.828-6.829a4 4 0 010-5.656z' />
+              </svg>
+            ) : (
+              <svg
+                className='w-6 h-6'
+                viewBox='0 0 24 24'
+                fill='none'
+                stroke='currentColor'
+                strokeWidth='2'
+                strokeLinecap='round'
+                strokeLinejoin='round'
+              >
+                <path d='M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.6l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 000-7.8z' />
+              </svg>
+            )}
+          </button>
           {/* Refresh button */}
           <button
             onClick={() => {

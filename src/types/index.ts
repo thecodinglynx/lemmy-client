@@ -236,6 +236,8 @@ export interface SlideshowState {
 export interface ContentState {
   selectedCommunities: Community[];
   selectedUsers: Person[];
+  // Communities the user has blocked (never fetch or display media from these)
+  blockedCommunities?: Community[];
   filters: {
     mediaTypes: MediaType[];
     showNSFW: boolean;
@@ -272,6 +274,18 @@ export interface SettingsState {
     videos: number;
     gifs: number;
   };
+  // Ordering mode for feed content
+  orderingMode?:
+    | 'hot'
+    | 'new'
+    | 'active'
+    | 'top-day'
+    | 'top-week'
+    | 'top-month'
+    | 'top-year'
+    | 'top-all'
+    | 'most-comments'
+    | 'random';
   server: {
     instanceUrl: string;
     customProxy: boolean;
@@ -305,6 +319,12 @@ export interface SettingsState {
   };
   // Source for slideshow content: feed from selected communities or liked posts library
   contentSource?: 'feed' | 'liked';
+  // Feed sourcing mode when contentSource === 'feed'
+  feedMode?: 'random-communities' | 'communities' | 'users';
+  /** Optional subset of selected community IDs to restrict the feed when feedMode==='communities'.
+   *  If empty or undefined, all selectedCommunities are considered active.
+   */
+  activeCommunityIds?: number[];
 }
 
 export interface UIState {

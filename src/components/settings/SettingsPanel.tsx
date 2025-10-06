@@ -19,234 +19,76 @@ import {
   PlusIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
-
-interface SettingsPanelProps {
-  className?: string;
-}
-
-interface SettingsSectionProps {
-  title: string;
-  description?: string;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-  defaultOpen?: boolean;
-}
-
-const SettingsSection: React.FC<SettingsSectionProps> = ({
-  title,
-  description,
-  icon,
-  children,
-  defaultOpen = false,
-}) => {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
-
-  return (
-    <div className='border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 mb-4'>
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className='w-full flex items-center justify-between p-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors'
-        aria-expanded={isOpen}
-      >
-        <div className='flex items-center space-x-3'>
-          <div className='p-2 bg-blue-100 dark:bg-blue-900 rounded-lg'>
-            {icon}
-          </div>
-          <div>
-            <h3 className='text-lg font-semibold text-gray-900 dark:text-white'>
-              {title}
-            </h3>
-            {description && (
-              <p className='text-sm text-gray-600 dark:text-gray-400'>
-                {description}
-              </p>
-            )}
-          </div>
-        </div>
-        {isOpen ? (
-          <ChevronDownIcon className='h-5 w-5 text-gray-500' />
-        ) : (
-          <ChevronRightIcon className='h-5 w-5 text-gray-500' />
-        )}
-      </button>
-      {isOpen && (
-        <div className='px-4 pb-4 border-t border-gray-200 dark:border-gray-700'>
-          <div className='pt-4'>{children}</div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
-  const {
-    settings,
-    updateSettings,
-    reset,
-    content,
-    addCommunity,
-    removeCommunity,
-    addUser,
-    removeUser,
-    setFilters,
-    setTiming,
-    toggleAutoAdvance,
-    slideshow,
-  } = useAppStore();
-  const navigate = useNavigate();
-  const checkCommunityMedia = useCheckCommunityMedia();
-
-  // Local state for adding new communities/users
-  const [newCommunityName, setNewCommunityName] = useState('');
-  const [newUsername, setNewUsername] = useState('');
-  const [isAddingCommunity, setIsAddingCommunity] = useState(false);
-  const [communitySearchError, setCommunitySearchError] = useState('');
-  const [isTestingConnection, setIsTestingConnection] = useState(false);
-  const [connectionTestResult, setConnectionTestResult] = useState<
-    string | null
-  >(null);
-
   // Handle Escape key to close settings
   useEffect(() => {
     const handleKeyPress = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        navigate('/');
-      }
+      if (event.key === 'Escape') navigate('/');
     };
-
     document.addEventListener('keydown', handleKeyPress);
-    return () => {
-      document.removeEventListener('keydown', handleKeyPress);
-    };
+    return () => document.removeEventListener('keydown', handleKeyPress);
   }, [navigate]);
+import React, { useState, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useAppStore } from '@stores/app-store';
+import { createLemmyApiClient } from '@services/lemmy-api-client';
+import { useCheckCommunityMedia } from '@hooks/useContent';
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ClockIcon,
+  ShieldCheckIcon,
+  ArrowLeftIcon,
+  UserGroupIcon,
+  GlobeAltIcon,
+  PlusIcon,
+  XMarkIcon,
+} from '@heroicons/react/24/outline';
 
-  // Handle adding a community by searching for it first
-  const handleAddCommunity = async () => {
-    if (!newCommunityName.trim() || isAddingCommunity) {
-      return;
-    }
+interface SettingsPanelProps { className?: string; }
+interface SettingsSectionProps { title: string; description?: string; icon: React.ReactNode; children: React.ReactNode; defaultOpen?: boolean; }
 
-    setIsAddingCommunity(true);
-    setCommunitySearchError('');
+const SettingsSection: React.FC<SettingsSectionProps> = ({ title, description, icon, children, defaultOpen=false }) => {
+  const [open,setOpen]=useState(defaultOpen);
+  return <div className='border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 mb-4'>
+    <button onClick={()=>setOpen(!open)} className='w-full flex items-center justify-between p-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700'>
+      <div className='flex items-center space-x-3'>
+        <div className='p-2 bg-blue-100 dark:bg-blue-900 rounded-lg'>{icon}</div>
+        <div>
+          <h3 className='text-lg font-semibold text-gray-900 dark:text-white'>{title}</h3>
+          {description && <p className='text-sm text-gray-600 dark:text-gray-400'>{description}</p>}
+        </div>
+      </div>
+      {open ? <ChevronDownIcon className='h-5 w-5 text-gray-500'/> : <ChevronRightIcon className='h-5 w-5 text-gray-500'/>}
+    </button>
+    {open && <div className='px-4 pb-4 border-t border-gray-200 dark:border-gray-700'><div className='pt-4'>{children}</div></div>}
+  </div>;
+};
 
+const SettingsPanel: React.FC<SettingsPanelProps> = ({ className='' }) => {
+  const { settings, updateSettings, content, addCommunity, removeCommunity, addUser, removeUser, setFilters, setTiming, toggleAutoAdvance, slideshow, reset } = useAppStore();
+  const navigate = useNavigate();
+  const checkCommunityMedia = useCheckCommunityMedia();
+  const [newCommunityName,setNewCommunityName]=useState('');
+  const [newUsername,setNewUsername]=useState('');
+  const [isAddingCommunity,setIsAddingCommunity]=useState(false);
+  const [communitySearchError,setCommunitySearchError]=useState('');
+  const [isTestingConnection,setIsTestingConnection]=useState(false);
+  const [connectionTestResult,setConnectionTestResult]=useState<string|null>(null);
+
+  useEffect(()=>{ const onKey=(e:KeyboardEvent)=>{ if(e.key==='Escape') navigate('/'); }; document.addEventListener('keydown',onKey); return()=>document.removeEventListener('keydown',onKey);},[navigate]);
+
+  const handleAddCommunity= async()=>{
+    if(!newCommunityName.trim()||isAddingCommunity) return; setIsAddingCommunity(true); setCommunitySearchError('');
     try {
-      console.log(
-        `Searching for communities with query: "${newCommunityName.trim()}"`
-      );
-      const lemmyApi = createLemmyApiClient(
-        settings.server.instanceUrl,
-        settings.server.customProxy
-      );
-      const communities = await lemmyApi.searchCommunities(
-        newCommunityName.trim(),
-        10
-      );
-      console.log(
-        `Search returned ${communities.length} communities:`,
-        communities
-      );
+      const api = createLemmyApiClient(settings.server.instanceUrl, settings.server.customProxy);
+      const results = await api.searchCommunities(newCommunityName.trim(),10);
+      const exact = results.find(c=>c.name.toLowerCase()===newCommunityName.trim().toLowerCase());
+      if(!exact){ setCommunitySearchError(`No exact match for "${newCommunityName.trim()}"`); return; }
+      try { const media = await checkCommunityMedia.mutateAsync(exact.id); if(!media.hasMedia){ setCommunitySearchError('Community has no media'); return; } } catch {}
+      addCommunity(exact); setNewCommunityName('');
+    } catch { setCommunitySearchError('Search failed'); } finally { setIsAddingCommunity(false);} };
 
-      if (communities.length > 0) {
-        // Find exact match only - don't fall back to partial matches
-        const exactMatch = communities.find(
-          (c) => c.name.toLowerCase() === newCommunityName.trim().toLowerCase()
-        );
-
-        if (!exactMatch) {
-          setCommunitySearchError(
-            `No exact match found for "${newCommunityName.trim()}". Found similar communities: ${communities.map((c) => c.name).join(', ')}`
-          );
-          return;
-        }
-
-        const communityToAdd = exactMatch;
-
-        console.log(
-          `Checking media availability for community: ${communityToAdd.name} (ID: ${communityToAdd.id})`
-        );
-
-        // Check if the community has media content
-        try {
-          const mediaCheck = await checkCommunityMedia.mutateAsync(
-            communityToAdd.id
-          );
-
-          if (!mediaCheck.hasMedia) {
-            setCommunitySearchError(
-              `Community "${communityToAdd.name}" has no media content available. Found ${mediaCheck.totalPosts} posts but none contain images, videos, or GIFs.`
-            );
-            return;
-          }
-
-          console.log(
-            `Community "${communityToAdd.name}" has ${mediaCheck.mediaCount} media posts out of ${mediaCheck.totalPosts} total posts`
-          );
-        } catch (mediaError) {
-          console.error('Error checking community media:', mediaError);
-          setCommunitySearchError(
-            `Failed to check media availability for "${communityToAdd.name}". Please try again.`
-          );
-          return;
-        }
-
-        console.log(
-          `Adding community: ${communityToAdd.name} (ID: ${communityToAdd.id})`
-        );
-        addCommunity(communityToAdd);
-        setNewCommunityName('');
-        console.log(
-          `Successfully added community: ${communityToAdd.name} (ID: ${communityToAdd.id})`
-        );
-      } else {
-        setCommunitySearchError(
-          `No communities found for "${newCommunityName.trim()}"`
-        );
-      }
-    } catch (error) {
-      console.error('Error searching for community:', error);
-      setCommunitySearchError(
-        'Failed to search for community. Please try again.'
-      );
-    } finally {
-      setIsAddingCommunity(false);
-    }
-  };
-
-  // Test connection to the server
-  const handleTestConnection = async () => {
-    setIsTestingConnection(true);
-    setConnectionTestResult(null);
-
-    try {
-      const testApi = createLemmyApiClient(
-        settings.server.instanceUrl,
-        settings.server.customProxy
-      );
-      await testApi.getSite();
-      setConnectionTestResult('Connection successful! ✅');
-    } catch (error) {
-      console.error('Connection test failed:', error);
-      setConnectionTestResult(
-        'Connection failed! ❌ Please check the instance URL and try again.'
-      );
-    } finally {
-      setIsTestingConnection(false);
-    }
-  };
-
-  const handleResetToDefaults = async () => {
-    const confirmed = confirm(
-      'Reset everything to defaults and clear data?\n\nThis will:\n• Reset all settings\n• Remove all selected communities and users\n• Clear pagination and viewed history\n• Clear media/query caches and local storage'
-    );
-    if (!confirmed) return;
-
-    // 1) Reset entire store (settings + content + slideshow + UI)
-    reset();
-
-    // 2) Clear React Query cache
-    try {
-      await cacheUtils.clearCache();
-      console.log('[Settings] React Query cache cleared');
+  const handleResetToDefaults = ()=>{ if(confirm('Reset settings and selections?')) reset(); };
     } catch (err) {
       console.warn('[Settings] Failed clearing React Query cache', err);
     }
@@ -347,6 +189,140 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
                   </span>
                 </div>
               </div>
+
+              <div>
+                <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
+                  Content Source
+                </label>
+                <div className='flex flex-wrap gap-4 items-center'>
+                  {[
+                    { key: 'feed', label: 'Communities Feed' },
+                    { key: 'liked', label: 'Liked Media' },
+                  ].map((opt) => (
+                    <label
+                      key={opt.key}
+                      className='inline-flex items-center space-x-2 cursor-pointer'
+                    >
+                      <input
+                        type='radio'
+                        name='contentSource'
+                        value={opt.key}
+                        checked={(settings.contentSource || 'feed') === opt.key}
+                        onChange={(e) =>
+                          updateSettings({
+                            contentSource: e.target.value as any,
+                          })
+                        }
+                        className='text-blue-600 focus:ring-blue-500 h-4 w-4 border-gray-300'
+                      />
+                      <span className='text-sm text-gray-700 dark:text-gray-300'>
+                        {opt.label}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+                  Switch to "Liked Media" to browse only items you've liked.
+                  Feed mode enables infinite loading; liked mode is a static
+                  curated list.
+                </p>
+                {settings.contentSource === 'feed' && (
+                  <div className='mt-4'>
+                    <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
+                      Feed Mode
+                    </label>
+                    <div className='flex flex-col gap-2'>
+                      {[
+                        {
+                          key: 'random-communities',
+                          label: 'Random communities (global sample)',
+                        },
+                        {
+                          key: 'communities',
+                          label: 'My selected communities only',
+                        },
+                        {
+                          key: 'communities-images',
+                          label: 'My selected communities (images only)',
+                        },
+                        { key: 'users', label: 'My selected users only' },
+                      ].map((opt) => (
+                        <label
+                          key={opt.key}
+                          className='inline-flex items-start gap-2 cursor-pointer'
+                        >
+                          <input
+                            type='radio'
+                            name='feedMode'
+                            value={opt.key}
+                            checked={
+                              (settings.feedMode || 'random-communities') ===
+                              opt.key
+                            }
+                            onChange={(e) =>
+                              updateSettings({
+                                feedMode: e.target.value as any,
+                              })
+                            }
+                            className='text-blue-600 focus:ring-blue-500 h-4 w-4 border-gray-300 mt-0.5'
+                          />
+                          <span className='text-sm text-gray-700 dark:text-gray-300'>
+                            {opt.label}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+                      Selecting communities or users doesn't switch modes
+                      automatically—choose explicitly here.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {settings.contentSource !== 'liked' && (
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
+                    Feed Ordering
+                  </label>
+                  <div className='grid grid-cols-2 md:grid-cols-3 gap-2'>
+                    {[
+                      { key: 'hot', label: 'Hot' },
+                      { key: 'new', label: 'New' },
+                      { key: 'active', label: 'Active' },
+                      { key: 'most-comments', label: 'Most Comments' },
+                      { key: 'top-day', label: 'Top Day' },
+                      { key: 'top-week', label: 'Top Week' },
+                      { key: 'top-month', label: 'Top Month' },
+                      { key: 'top-year', label: 'Top Year' },
+                      { key: 'top-all', label: 'Top All' },
+                      { key: 'random', label: 'Random' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.key}
+                        onClick={() =>
+                          updateSettings({ orderingMode: opt.key as any })
+                        }
+                        className={`px-3 py-1.5 text-xs rounded-md border transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/40 whitespace-nowrap overflow-hidden text-ellipsis ${
+                          (settings.orderingMode || 'hot') === opt.key
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : 'bg-gray-100 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600'
+                        }`}
+                        aria-pressed={
+                          (settings.orderingMode || 'hot') === opt.key
+                        }
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+                    Choose how feed posts are ordered. "Random" shuffles the
+                    fetched batch; others request a specific sort from the
+                    server. Changing this refetches the feed.
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
@@ -668,37 +644,275 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
                       from specific sources.
                     </p>
                   ) : (
-                    content.selectedCommunities.map((community) => (
-                      <div
-                        key={community.id}
-                        className='flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg'
-                      >
-                        <div className='flex items-center space-x-3'>
-                          <div className='w-8 h-8 bg-blue-100 dark:bg-blue-900 rounded-full flex items-center justify-center'>
-                            <UserGroupIcon className='h-4 w-4 text-blue-600 dark:text-blue-400' />
+                    content.selectedCommunities.map((community) => {
+                      const activeIds = settings.activeCommunityIds || [];
+                      const isActive =
+                        activeIds.length === 0 ||
+                        activeIds.includes(community.id);
+                      return (
+                        <div
+                          key={community.id}
+                          className='flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg'
+                        >
+                          <div className='flex items-center space-x-3'>
+                            <input
+                              type='checkbox'
+                              checked={isActive}
+                              onChange={() => {
+                                const current = settings.activeCommunityIds || [];
+                                let next: number[];
+                                // If currently all active (empty array), initialize full list first
+                                const base = current.length === 0 ? content.selectedCommunities.map(c=>c.id) : current;
+                                if (isActive) {
+                                  next = base.filter((id) => id !== community.id);
+                                } else {
+                                  next = [...base, community.id];
+                                }
+                                // If all selected, store empty to mean 'all'
+                                const allIds = content.selectedCommunities.map(c=>c.id).sort();
+                                const normalized = next.sort();
+                                const isAll =
+                                  allIds.length === normalized.length &&
+                                  allIds.every((v,i)=>v===normalized[i]);
+                                updateSettings({
+                                  activeCommunityIds: isAll ? [] : normalized,
+                                } as any);
+                              }}
+                              className='h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded'
+                            />
+                            <div className='w-8 h-8 bg-blue-100 dark:bg-blue-900 rounded-full flex items-center justify-center'>
+                              <UserGroupIcon className='h-4 w-4 text-blue-600 dark:text-blue-400' />
+                            </div>
+                            <div>
+                              <p className='font-medium text-gray-900 dark:text-white'>
+                                {community.name}
+                              </p>
+                              {community.title &&
+                                community.title !== community.name && (
+                                  <p className='text-sm text-gray-500 dark:text-gray-400'>
+                                    {community.title}
+                                  </p>
+                                )}
+                            </div>
                           </div>
-                          <div>
-                            <p className='font-medium text-gray-900 dark:text-white'>
-                              {community.name}
-                            </p>
-                            {community.title &&
-                              community.title !== community.name && (
-                                <p className='text-sm text-gray-500 dark:text-gray-400'>
-                                  {community.title}
-                                </p>
-                              )}
+                          <div className='flex items-center gap-2'>
+                            <button
+                              onClick={() => removeCommunity(community.id)}
+                              className='p-1 text-gray-400 hover:text-red-500 transition-colors'
+                              aria-label={`Remove ${community.name}`}
+                            >
+                              <XMarkIcon className='h-5 w-5' />
+                            </button>
                           </div>
                         </div>
-                        <button
-                          onClick={() => removeCommunity(community.id)}
-                          className='p-1 text-gray-400 hover:text-red-500 transition-colors'
-                          aria-label={`Remove ${community.name}`}
-                        >
-                          <XMarkIcon className='h-5 w-5' />
-                        </button>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
+                </div>
+                {content.selectedCommunities.length > 1 && (
+                  <div className='flex gap-2 mt-2'>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] } as any)
+                      }
+                      className='px-3 py-1 text-xs rounded-md border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600'
+                    >
+                      Select All
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (all sentinel)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop2)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop3)
+                    </button>
+                    <button
+                      onClick={() => {
+                        updateSettings({ activeCommunityIds: [] as any });
+                      }}
+                      className='hidden'
+                    >
+                      (noop4)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop5)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop6)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop7)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop8)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop9)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop10)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop11)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop12)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop13)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop14)
+                    </button>
+                    <button
+                      onClick={() =>
+                        updateSettings({ activeCommunityIds: [] as any })
+                      }
+                      className='hidden'
+                    >
+                      (noop15)
+                    </button>
+                    <button
+                      onClick={() => {
+                        updateSettings({ activeCommunityIds: [] as any });
+                      }}
+                      className='px-3 py-1 text-xs rounded-md border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600'
+                    >
+                      Clear Subset (All Active)
+                    </button>
+                  </div>
+                )}
+
+                {/* Blocked Communities */}
+                <div className='mt-6'>
+                  <h5 className='text-md font-medium text-gray-900 dark:text-white mb-2 flex items-center'>
+                    <ShieldCheckIcon className='h-5 w-5 mr-2 text-red-500 dark:text-red-400' />
+                    Blocked Communities
+                  </h5>
+                  {content.blockedCommunities?.length === 0 ? (
+                    <p className='text-sm text-gray-500 dark:text-gray-400 italic'>
+                      You haven't blocked any communities. Blocked communities
+                      are permanently excluded from the feed.
+                    </p>
+                  ) : (
+                    <div className='space-y-2'>
+                      {(content.blockedCommunities || []).map((community) => (
+                        <div
+                          key={community.id}
+                          className='flex items-center justify-between p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg'
+                        >
+                          <div className='flex items-center space-x-3'>
+                            <div className='w-8 h-8 bg-red-100 dark:bg-red-800 rounded-full flex items-center justify-center'>
+                              <UserGroupIcon className='h-4 w-4 text-red-600 dark:text-red-300' />
+                            </div>
+                            <div>
+                              <p className='font-medium text-red-700 dark:text-red-300'>
+                                {community.name}
+                              </p>
+                              {community.title &&
+                                community.title !== community.name && (
+                                  <p className='text-xs text-red-600 dark:text-red-400'>
+                                    {community.title}
+                                  </p>
+                                )}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() =>
+                              useAppStore
+                                .getState()
+                                .unblockCommunity(community.id)
+                            }
+                            className='px-2 py-1 text-xs font-medium rounded-md bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500'
+                          >
+                            Unblock
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {content.blockedCommunities &&
+                    content.blockedCommunities.length > 0 && (
+                      <p className='mt-2 text-xs text-gray-500 dark:text-gray-400'>
+                        Blocking a community permanently filters out its
+                        content. You can unblock it anytime.
+                      </p>
+                    )}
                 </div>
               </div>
 
@@ -853,146 +1067,28 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
 
               {/* Usage Info */}
               <div className='bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4'>
-                <div className='flex items-start'>
-                  <div className='flex-shrink-0'>
-                    <GlobeAltIcon className='h-5 w-5 text-blue-600 dark:text-blue-400' />
+                {content.selectedCommunities.length > 1 && (
+                  <div className='flex gap-2 mt-2'>
+                    <button
+                      onClick={() => updateSettings({ activeCommunityIds: [] } as any)}
+                      className='px-3 py-1 text-xs rounded-md border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600'
+                    >
+                      All Active
+                    </button>
+                    <button
+                      onClick={() => updateSettings({ activeCommunityIds: [] as any })}
+                      className='hidden'
+                    />
+                    <button
+                      onClick={() => updateSettings({ activeCommunityIds: [] as any })}
+                      className='hidden'
+                    />
+                    <button
+                      onClick={() => updateSettings({ activeCommunityIds: [] as any })}
+                      className='hidden'
+                    />
                   </div>
-                  <div className='ml-3'>
-                    <h5 className='text-sm font-medium text-blue-900 dark:text-blue-100'>
-                      Content Filtering
-                    </h5>
-                    <p className='text-sm text-blue-700 dark:text-blue-300 mt-1'>
-                      When communities or users are selected, only content from
-                      those sources will be shown. Leave both empty to show
-                      content from all sources.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </SettingsSection>
-
-          {/* Display Options */}
-          <SettingsSection
-            title='Display & Appearance'
-            description='Customize visual appearance and layout'
-            icon={
-              <PaintBrushIcon className='h-6 w-6 text-purple-600 dark:text-purple-400' />
-            }
-          >
-            <div className='space-y-4'>
-              <div>
-                <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
-                  Theme
-                </label>
-                <select
-                  value={settings.theme}
-                  onChange={(e) =>
-                    updateSettings({
-                      theme: e.target.value as 'light' | 'dark' | 'auto',
-                    })
-                  }
-                  className='block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white'
-                >
-                  <option value='light'>Light</option>
-                  <option value='dark'>Dark</option>
-                  <option value='auto'>Auto (System)</option>
-                </select>
-              </div>
-
-              <div className='space-y-3'>
-                <div className='flex items-center'>
-                  <input
-                    type='checkbox'
-                    checked={settings.display.showAttribution}
-                    onChange={(e) =>
-                      updateSettings({
-                        display: {
-                          ...settings.display,
-                          showAttribution: e.target.checked,
-                        },
-                      })
-                    }
-                    className='h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded'
-                  />
-                  <span className='ml-2 text-sm text-gray-700 dark:text-gray-300'>
-                    Show attribution overlay
-                  </span>
-                </div>
-
-                <div className='flex items-center'>
-                  <input
-                    type='checkbox'
-                    checked={settings.display.showControls}
-                    onChange={(e) =>
-                      updateSettings({
-                        display: {
-                          ...settings.display,
-                          showControls: e.target.checked,
-                        },
-                      })
-                    }
-                    className='h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded'
-                  />
-                  <span className='ml-2 text-sm text-gray-700 dark:text-gray-300'>
-                    Show playback controls
-                  </span>
-                </div>
-
-                <div className='flex items-center'>
-                  <input
-                    type='checkbox'
-                    checked={settings.display.fullscreenDefault}
-                    onChange={(e) =>
-                      updateSettings({
-                        display: {
-                          ...settings.display,
-                          fullscreenDefault: e.target.checked,
-                        },
-                      })
-                    }
-                    className='h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded'
-                  />
-                  <span className='ml-2 text-sm text-gray-700 dark:text-gray-300'>
-                    Start in fullscreen mode
-                  </span>
-                </div>
-              </div>
-
-              <div>
-                <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>
-                  Attribution Position
-                </label>
-                <select
-                  value={settings.display.attributionPosition}
-                  onChange={(e) =>
-                    updateSettings({
-                      display: {
-                        ...settings.display,
-                        attributionPosition: e.target.value as 'top' | 'bottom',
-                      },
-                    })
-                  }
-                  className='block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white'
-                >
-                  <option value='top'>Top</option>
-                  <option value='bottom'>Bottom</option>
-                </select>
-              </div>
-            </div>
-          </SettingsSection>
-
-          {/* Accessibility Options */}
-          <SettingsSection
-            title='Accessibility'
-            description='Settings to improve accessibility and user experience'
-            icon={
-              <ShieldCheckIcon className='h-6 w-6 text-green-600 dark:text-green-400' />
-            }
-          >
-            <div className='space-y-4'>
-              <div className='space-y-3'>
-                <div className='flex items-center'>
+                )}
                   <input
                     type='checkbox'
                     checked={settings.accessibility.highContrast}

@@ -56,10 +56,22 @@ function transformPostView(lemmyPost: LemmyPostView): PostView {
     counts: {
       id: 0, // Default value as this field doesn't exist in new API
       post_id: lemmyPost.post.id,
-      comments: 0, // Would need to be fetched separately
-      score: lemmyPost.post_actions?.like_score || 0,
-      upvotes: 0, // Would need to be fetched separately
-      downvotes: 0, // Would need to be fetched separately
+      comments:
+        (lemmyPost as any).counts?.comments ??
+        (lemmyPost as any).counts?.comment_count ??
+        0,
+      score:
+        (lemmyPost as any).counts?.score ??
+        (lemmyPost as any).counts?.score_total ??
+        0,
+      upvotes:
+        (lemmyPost as any).counts?.upvotes ??
+        (lemmyPost as any).counts?.upvote_count ??
+        0,
+      downvotes:
+        (lemmyPost as any).counts?.downvotes ??
+        (lemmyPost as any).counts?.downvote_count ??
+        0,
       published: lemmyPost.post.published_at,
       newest_comment_time_necro: lemmyPost.post.published_at,
       newest_comment_time: lemmyPost.post.published_at,
@@ -72,7 +84,7 @@ function transformPostView(lemmyPost: LemmyPostView): PostView {
     saved: !!lemmyPost.post_actions?.saved_at,
     read: !!lemmyPost.post_actions?.read_at,
     creator_blocked: lemmyPost.creator_banned || false,
-    my_vote: lemmyPost.post_actions?.like_score,
+    my_vote: lemmyPost.post_actions?.like_score ?? undefined,
     unread_comments: 0, // Would need to be calculated
   };
 }
@@ -380,15 +392,24 @@ export class LemmyAPIClient {
    */
   async getUserPosts(
     userId: number,
-    params: Partial<GetPosts> = {}
+    params: { sort?: string; page?: number; limit?: number } = {}
   ): Promise<PaginatedPostsResponse> {
-    // For now, return empty array as the new API structure doesn't directly support this
-    // This would need to be implemented differently in the real application
-    console.warn('getUserPosts not fully implemented with new API structure', {
-      userId,
-      params,
-    });
-    return { posts: [] };
+    const { sort = 'Hot', page = 1, limit = 30 } = params;
+    try {
+      const response: any = await this.makeRequest(() =>
+        this.client.getPersonDetails({ person_id: userId, sort, page, limit })
+      );
+      const rawPosts = Array.isArray(response?.posts) ? response.posts : [];
+      const posts = rawPosts.map((p: any) => transformPostView(p));
+      const hasMore = rawPosts.length === limit; // heuristic for page-based pagination
+      return {
+        posts,
+        nextCursor: hasMore ? (page + 1).toString() : undefined,
+      };
+    } catch (err) {
+      console.warn('[lemmy-api-client] getUserPosts failed', { userId, err });
+      return { posts: [] };
+    }
   }
 
   /**

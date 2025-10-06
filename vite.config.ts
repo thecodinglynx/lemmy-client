@@ -10,6 +10,94 @@ export default defineConfig({
     {
       name: 'dynamic-lemmy-proxy',
       configureServer(server) {
+        // =============================================================
+        // Redgifs Resolution Helpers (dev-only)
+        // =============================================================
+        let redgifsToken: { token: string; fetched: number } | null = null;
+        const REDGIFS_TOKEN_TTL_MS = 15 * 60 * 1000; // 15 minutes
+        const redgifsGifCache = new Map<
+          string,
+          { url: string; cached: number }
+        >();
+
+        async function getRedgifsToken(): Promise<string | null> {
+          const now = Date.now();
+          if (
+            redgifsToken &&
+            now - redgifsToken.fetched < REDGIFS_TOKEN_TTL_MS &&
+            redgifsToken.token
+          ) {
+            return redgifsToken.token;
+          }
+          try {
+            const resp = await fetch(
+              'https://api.redgifs.com/v2/auth/temporary'
+            );
+            if (!resp.ok) {
+              console.warn('⚠️ Redgifs token request failed:', resp.status);
+              return null;
+            }
+            const data: any = await resp.json();
+            if (data?.token) {
+              redgifsToken = { token: data.token, fetched: now };
+              console.log('🔑 Obtained new Redgifs temporary token');
+              return data.token;
+            }
+            console.warn('⚠️ Redgifs token response missing token field');
+            return null;
+          } catch (err) {
+            console.warn('⚠️ Redgifs token fetch error:', err);
+            return null;
+          }
+        }
+
+        async function resolveRedgifsViaApi(
+          slug: string
+        ): Promise<string | null> {
+          if (redgifsGifCache.has(slug)) {
+            return redgifsGifCache.get(slug)!.url;
+          }
+          const token = await getRedgifsToken();
+          if (!token) return null;
+          try {
+            const apiUrl = `https://api.redgifs.com/v2/gifs/${encodeURIComponent(slug)}`;
+            const resp = await fetch(apiUrl, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!resp.ok) {
+              console.warn('⚠️ Redgifs gif API failed', resp.status, slug);
+              return null;
+            }
+            const data: any = await resp.json();
+            const gif = data?.gif;
+            if (!gif) return null;
+            const candidate =
+              gif.urls?.hd || gif.urls?.sd || gif.urls?.gif || gif.urls?.poster;
+            if (candidate) {
+              redgifsGifCache.set(slug, { url: candidate, cached: Date.now() });
+              console.log(`✅ Redgifs API resolved ${slug} -> ${candidate}`);
+              return candidate;
+            }
+            return null;
+          } catch (err) {
+            console.warn('⚠️ Error resolving Redgifs via API:', err);
+            return null;
+          }
+        }
+
+        function extractFromHtml(html: string): string | null {
+          const unescape = (s: string) => s.replace(/\\\//g, '/');
+          const patterns = [
+            /"hdSrc"\s*:\s*"(https:[^"\\]+?\.mp4)"/i,
+            /"sdSrc"\s*:\s*"(https:[^"\\]+?\.mp4)"/i,
+            /"gif"\s*:\s*"(https:[^"\\]+?\.mp4)"/i,
+          ];
+          for (const p of patterns) {
+            const m = p.exec(html);
+            if (m?.[1]) return unescape(m[1]);
+          }
+          return null;
+        }
         // Handle Lemmy API proxying
         server.middlewares.use('/api/lemmy', async (req, res) => {
           const start = Date.now();
@@ -146,19 +234,64 @@ export default defineConfig({
 
             console.log(`🖼️ Proxying media: ${targetUrl}`);
 
-            // Forward the request to the target media URL
-            const response = await fetch(targetUrl, {
+            let finalUrl = targetUrl;
+            const redgifsMatch =
+              /https?:\/\/www\.redgifs\.com\/watch\/([a-z0-9]+)/i.exec(
+                targetUrl
+              );
+            if (redgifsMatch) {
+              const slug = redgifsMatch[1];
+              console.log(`🔎 Resolving Redgifs slug (API first): ${slug}`);
+              const apiResolved = await resolveRedgifsViaApi(slug);
+              if (apiResolved) {
+                finalUrl = apiResolved;
+              } else {
+                console.log(
+                  `ℹ️ API resolution failed or absent for ${slug}, attempting HTML scrape`
+                );
+                try {
+                  const pageResp = await fetch(targetUrl, {
+                    method: 'GET',
+                    headers: {
+                      'User-Agent':
+                        req.headers['user-agent'] ||
+                        'Mozilla/5.0 (LemmyClient Redgifs Resolver)',
+                      Accept: 'text/html,application/xhtml+xml',
+                    },
+                  });
+                  const html = await pageResp.text();
+                  const extracted = extractFromHtml(html);
+                  if (extracted) {
+                    finalUrl = extracted;
+                    console.log(
+                      `✅ HTML scrape resolved Redgifs media ${slug} -> ${finalUrl}`
+                    );
+                  } else {
+                    console.warn(
+                      `⚠️ Could not resolve Redgifs slug ${slug}; serving watch page (likely to fail).`
+                    );
+                  }
+                } catch (err) {
+                  console.warn('⚠️ Redgifs HTML fallback error:', err);
+                }
+              }
+            }
+
+            // Forward the (possibly resolved) media URL
+            const response = await fetch(finalUrl, {
               method: 'GET',
               headers: {
                 'User-Agent': req.headers['user-agent'] || 'Lemmy Client',
                 // Forward relevant headers
                 Accept: req.headers['accept'] || '*/*',
-                Referer: new URL(targetUrl).origin,
+                Referer: redgifsMatch
+                  ? 'https://www.redgifs.com'
+                  : new URL(finalUrl).origin,
               },
             });
 
             console.log(
-              `📥 Media response: ${response.status} for ${targetUrl}`
+              `📥 Media response: ${response.status} for ${finalUrl}`
             );
 
             // Set CORS headers

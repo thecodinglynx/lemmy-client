@@ -17,6 +17,7 @@ interface AttributionOverlayProps {
   className?: string;
   onCommunityClick?: (community: string) => void;
   onUserClick?: (user: string) => void;
+  onBlockCommunity?: (communityId: number) => void;
 }
 
 export const AttributionOverlay: React.FC<AttributionOverlayProps> = ({
@@ -24,6 +25,7 @@ export const AttributionOverlay: React.FC<AttributionOverlayProps> = ({
   className = '',
   onCommunityClick,
   onUserClick,
+  onBlockCommunity,
 }) => {
   const handleCommunityClick = () => {
     onCommunityClick?.(post.community.name);
@@ -82,6 +84,15 @@ export const AttributionOverlay: React.FC<AttributionOverlayProps> = ({
             </svg>
             <span>r/{post.community.name}</span>
           </button>
+          {onBlockCommunity && (
+            <button
+              onClick={() => onBlockCommunity(post.community.id)}
+              className='text-xs px-2 py-0.5 rounded bg-red-600/70 hover:bg-red-600 text-white transition-colors'
+              aria-label={`Block community ${post.community.name}`}
+            >
+              Block
+            </button>
+          )}
 
           <span className='text-gray-500'>•</span>
 
