@@ -357,13 +357,27 @@ export function useBatchPosts() {
           allPosts.push(...posts);
           console.log(`📊 Loaded ${posts.length} posts from All feed`);
         } else if (feedMode === 'communities') {
-          // Fetch from selected communities (if any selected)
-          if (content.selectedCommunities.length > 0) {
+          // Determine active subset (if any defined)
+          const activeIds = (settings as any).activeCommunityIds as
+            | number[]
+            | undefined;
+          const communities =
+            activeIds && activeIds.length > 0
+              ? content.selectedCommunities.filter((c) =>
+                  activeIds.includes(c.id)
+                )
+              : content.selectedCommunities;
+          if (communities.length === 0) {
             console.log(
-              `📡 Fetching from ${content.selectedCommunities.length} selected communities...`
+              '[useBatchPosts] ℹ️ No active communities selected (subset empty).'
             );
+            setHasMore(false);
+            return allPosts; // nothing to fetch
           }
-          for (const community of content.selectedCommunities) {
+          console.log(
+            `📡 Fetching from ${communities.length} active communities (subset applied: ${!!activeIds && activeIds.length > 0})...`
+          );
+          for (const community of communities) {
             if (blockedIds.has(community.id)) {
               console.log(
                 `⛔ Skipping blocked community ${community.name} (${community.id})`
@@ -1031,8 +1045,21 @@ export function useLoadMorePosts() {
             });
           });
         } else {
-          // Communities fetch (if any)
-          for (const community of content.selectedCommunities) {
+          // Communities fetch (subset-aware) if any
+          const activeIds = (useAppStore.getState().settings as any)
+            .activeCommunityIds as number[] | undefined;
+          const communities =
+            activeIds && activeIds.length > 0
+              ? content.selectedCommunities.filter((c) =>
+                  activeIds.includes(c.id)
+                )
+              : content.selectedCommunities;
+          if (communities.length === 0) {
+            console.log(
+              '[useLoadMorePosts] ℹ️ No active communities subset to load.'
+            );
+          }
+          for (const community of communities) {
             if (blockedIds.has(community.id)) {
               console.log(
                 `⛔ (loadMore) Skipping blocked community ${community.name} (${community.id})`
