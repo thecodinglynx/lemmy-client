@@ -1,5 +1,75 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 
+// --- Redgifs resolution support (mirrors dev middleware behavior) ---
+interface RedgifsTokenCache {
+  token: string;
+  fetched: number;
+}
+let redgifsToken: RedgifsTokenCache | null = null;
+const REDGIFS_TOKEN_TTL_MS = 15 * 60 * 1000;
+
+async function getRedgifsToken(): Promise<string | null> {
+  const now = Date.now();
+  if (redgifsToken && now - redgifsToken.fetched < REDGIFS_TOKEN_TTL_MS) {
+    return redgifsToken.token;
+  }
+  try {
+    const resp = await fetch('https://api.redgifs.com/v2/auth/temporary');
+    if (!resp.ok) return null;
+    const data: any = await resp.json();
+    if (data?.token) {
+      redgifsToken = { token: data.token, fetched: now };
+      return data.token;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveRedgifs(slug: string): Promise<string | null> {
+  // Try API first
+  try {
+    const token = await getRedgifsToken();
+    if (token) {
+      const apiUrl = `https://api.redgifs.com/v2/gifs/${encodeURIComponent(slug)}`;
+      const resp = await fetch(apiUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (resp.ok) {
+        const data: any = await resp.json();
+        const gif = data?.gif;
+        const candidate =
+          gif?.urls?.hd || gif?.urls?.sd || gif?.urls?.gif || gif?.urls?.poster;
+        if (candidate) return candidate;
+      }
+    }
+  } catch {}
+  // Fallback: basic HTML scrape for mp4 sources
+  try {
+    const page = await fetch(`https://www.redgifs.com/watch/${slug}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (LemmyClient Redgifs Resolver)',
+        Accept: 'text/html',
+      },
+    });
+    if (page.ok) {
+      const html = await page.text();
+      const unescape = (s: string) => s.replace(/\\\//g, '/');
+      const patterns = [
+        /"hdSrc"\s*:\s*"(https:[^"\\]+?\.mp4)"/i,
+        /"sdSrc"\s*:\s*"(https:[^"\\]+?\.mp4)"/i,
+        /"gif"\s*:\s*"(https:[^"\\]+?\.mp4)"/i,
+      ];
+      for (const p of patterns) {
+        const m = p.exec(html);
+        if (m?.[1]) return unescape(m[1]);
+      }
+    }
+  } catch {}
+  return null;
+}
+
 // Simple Vercel serverless media proxy to mirror the dev middleware logic for production
 export default async function handler(
   req: IncomingMessage & { query?: any; url?: string },
@@ -23,11 +93,24 @@ export default async function handler(
       return;
     }
 
-    const upstream = await fetch(targetUrl, {
+    let finalUrl = targetUrl;
+    const redgifsMatch =
+      /https?:\/\/www\.redgifs\.com\/watch\/([a-z0-9]+)/i.exec(targetUrl);
+    if (redgifsMatch) {
+      const slug = redgifsMatch[1];
+      const resolved = await resolveRedgifs(slug);
+      if (resolved) {
+        finalUrl = resolved;
+      }
+    }
+
+    const upstream = await fetch(finalUrl, {
       headers: {
         'User-Agent': 'LemmyClient (Vercel media proxy)',
         Accept: '*/*',
-        Referer: new URL(targetUrl).origin,
+        Referer: redgifsMatch
+          ? 'https://www.redgifs.com'
+          : new URL(finalUrl).origin,
       },
     });
 
@@ -43,8 +126,10 @@ export default async function handler(
     if (etag) res.setHeader('ETag', etag);
     const lastModified = upstream.headers.get('last-modified');
     if (lastModified) res.setHeader('Last-Modified', lastModified);
+    // Avoid setting content-length if we will stream (some upstream responses may be chunked)
     const contentLength = upstream.headers.get('content-length');
-    if (contentLength) res.setHeader('Content-Length', contentLength);
+    if (contentLength && !upstream.body)
+      res.setHeader('Content-Length', contentLength);
 
     // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
