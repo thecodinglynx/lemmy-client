@@ -361,11 +361,31 @@ export class LemmyAPIClient {
       this.client.getPosts(finalParams)
     );
 
+    // Normalize cursor shapes across Lemmy versions/servers
+    const normalizeCursor = (c: any): string | undefined => {
+      if (!c) return undefined;
+      if (typeof c === 'string') return c;
+      if (typeof c === 'object') {
+        return (
+          (c.page as string) ||
+          (c.cursor as string) ||
+          (c.value as string) ||
+          (c.token as string)
+        );
+      }
+      return undefined;
+    };
+
+    const nextRaw: any =
+      (response as any).next_cursor ?? (response as any).next_page;
+    const prevRaw: any =
+      (response as any).prev_cursor ?? (response as any).prev_page;
+
     // Transform the response posts to our format and return with pagination info
     return {
       posts: response.posts?.map(transformPostView) || [],
-      nextCursor: response.next_page,
-      prevCursor: response.prev_page,
+      nextCursor: normalizeCursor(nextRaw),
+      prevCursor: normalizeCursor(prevRaw),
     };
   }
 

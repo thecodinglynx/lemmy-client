@@ -27,7 +27,9 @@ async function getRedgifsToken(): Promise<string | null> {
   }
 }
 
-async function resolveRedgifs(slug: string): Promise<string | null> {
+async function resolveRedgifs(
+  slug: string
+): Promise<{ url: string; method: 'api' | 'scrape' } | null> {
   // Try API first
   try {
     const token = await getRedgifsToken();
@@ -41,7 +43,7 @@ async function resolveRedgifs(slug: string): Promise<string | null> {
         const gif = data?.gif;
         const candidate =
           gif?.urls?.hd || gif?.urls?.sd || gif?.urls?.gif || gif?.urls?.poster;
-        if (candidate) return candidate;
+        if (candidate) return { url: candidate, method: 'api' };
       }
     }
   } catch {}
@@ -63,7 +65,7 @@ async function resolveRedgifs(slug: string): Promise<string | null> {
       ];
       for (const p of patterns) {
         const m = p.exec(html);
-        if (m?.[1]) return unescape(m[1]);
+        if (m?.[1]) return { url: unescape(m[1]), method: 'scrape' };
       }
     }
   } catch {}
@@ -94,13 +96,29 @@ export default async function handler(
     }
 
     let finalUrl = targetUrl;
+    let resolutionPath = 'direct';
     const redgifsMatch =
       /https?:\/\/www\.redgifs\.com\/watch\/([a-z0-9]+)/i.exec(targetUrl);
     if (redgifsMatch) {
       const slug = redgifsMatch[1];
       const resolved = await resolveRedgifs(slug);
       if (resolved) {
-        finalUrl = resolved;
+        finalUrl = resolved.url;
+        resolutionPath = `redgifs:${resolved.method}`;
+      } else {
+        // Fail fast: don't stream the watch HTML to media elements
+        res.statusCode = 502;
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('X-Media-Proxy-Resolution', 'redgifs:fail');
+        res.end(
+          JSON.stringify({
+            error: 'redgifs_unresolved',
+            message: 'Failed to resolve Redgifs media URL',
+            slug,
+          })
+        );
+        return;
       }
     }
 
@@ -119,6 +137,23 @@ export default async function handler(
 
     // Copy selected headers
     const ct = upstream.headers.get('content-type');
+    // Guard against upstream HTML/JSON delivered to media elements
+    const lowerCT = ct?.toLowerCase() || '';
+    if (lowerCT.includes('text/html') || lowerCT.includes('application/json')) {
+      res.statusCode = 502;
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('X-Media-Proxy-Resolution', resolutionPath);
+      res.end(
+        JSON.stringify({
+          error: 'unexpected_content_type',
+          message: 'Upstream returned HTML/JSON instead of media',
+          contentType: ct,
+          url: finalUrl,
+        })
+      );
+      return;
+    }
     if (ct) res.setHeader('Content-Type', ct);
     const cacheControl = upstream.headers.get('cache-control');
     if (cacheControl) res.setHeader('Cache-Control', cacheControl);
@@ -135,6 +170,8 @@ export default async function handler(
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range');
+    // Debug header for resolution path (direct|redgifs:api|redgifs:scrape)
+    res.setHeader('X-Media-Proxy-Resolution', resolutionPath);
 
     if (!upstream.body) {
       const buf = await upstream.arrayBuffer();
