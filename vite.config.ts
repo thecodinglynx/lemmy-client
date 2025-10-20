@@ -287,6 +287,12 @@ export default defineConfig({
                 Referer: redgifsMatch
                   ? 'https://www.redgifs.com'
                   : new URL(finalUrl).origin,
+                // Some CDNs require Origin; emulate same-origin fetch to reduce 403
+                Origin: new URL(finalUrl).origin,
+                // Forward Range for partial content (video seeking)
+                ...(req.headers['range']
+                  ? { Range: String(req.headers['range']) }
+                  : {}),
               },
             });
 

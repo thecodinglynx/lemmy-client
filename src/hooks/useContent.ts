@@ -377,6 +377,7 @@ export function useBatchPosts() {
           console.log(
             `📡 Fetching from ${communities.length} active communities (subset applied: ${!!activeIds && activeIds.length > 0})...`
           );
+          let anyCommunityHasNext = false;
           for (const community of communities) {
             if (blockedIds.has(community.id)) {
               console.log(
@@ -419,17 +420,9 @@ export function useBatchPosts() {
               `📊 Raw response from ${community.name}: ${response.posts.length} posts`
             );
             console.log(`📄 Next cursor available: ${!!response.nextCursor}`);
-
-            // Update the cursor for this community for next time
-            if (response.nextCursor) {
-              setPaginationCursor(
-                community.id.toString(),
-                response.nextCursor as string
-              );
-              setHasMore(true);
-            } else {
-              setHasMore(false);
-            }
+            let lastCursor: string | undefined = response.nextCursor as
+              | string
+              | undefined;
 
             let posts = response.posts
               .filter((post: PostView) => {
@@ -494,7 +487,76 @@ export function useBatchPosts() {
                 })
               );
 
-            // Fallback: if this ordering produced 0 posts for this community, try Hot
+            // If too few media from first page, opportunistically prefetch one more page
+            if (posts.length < 8 && lastCursor) {
+              try {
+                const second = await apiClient.getPosts({
+                  community_id: community.id,
+                  sort: baseSort as any,
+                  limit: 20,
+                  type_: 'All',
+                  page_cursor: lastCursor,
+                });
+                lastCursor =
+                  (second.nextCursor as string | undefined) || lastCursor;
+                const extra = second.posts
+                  .filter((post: PostView) => {
+                    if (!post.post.url) return false;
+                    const url = post.post.url!;
+                    const isImage = isImageUrl(url);
+                    const isVideo = isVideoUrl(url);
+                    const isGif = isGifUrl(url);
+                    const hasMedia =
+                      (content.filters.mediaTypes.includes(MediaType.IMAGE) &&
+                        isImage) ||
+                      (content.filters.mediaTypes.includes(MediaType.VIDEO) &&
+                        isVideo) ||
+                      (content.filters.mediaTypes.includes(MediaType.GIF) &&
+                        isGif);
+                    if (!hasMedia) return false;
+                    if (post.counts.score < content.filters.minScore)
+                      return false;
+                    if (!content.filters.showNSFW && post.post.nsfw)
+                      return false;
+                    if (blockedIds.has(post.post.community_id)) return false;
+                    return true;
+                  })
+                  .map(
+                    (post: PostView): SlideshowPost => ({
+                      id: post.post.id.toString(),
+                      postId: post.post.id,
+                      title: post.post.name,
+                      url: post.post.url!,
+                      mediaType: getMediaType(post.post.url!),
+                      thumbnailUrl: post.post.thumbnail_url,
+                      creator: post.creator,
+                      community: post.community,
+                      score: post.counts.score,
+                      published: post.post.published,
+                      nsfw: post.post.nsfw,
+                      starred: false,
+                      viewed: false,
+                    })
+                  );
+                if (extra.length > 0) {
+                  console.log(
+                    `➕ Prefetched 2nd page for ${community.name}: +${extra.length} media`
+                  );
+                  posts.push(...extra);
+                }
+              } catch (e) {
+                console.warn(
+                  `Prefetch 2nd page failed for ${community.name}`,
+                  e
+                );
+              }
+            }
+
+            // Record whether this community has more and store cursor once
+            if (lastCursor) {
+              setPaginationCursor(community.id.toString(), lastCursor);
+              anyCommunityHasNext = true;
+            }
             if (
               posts.length === 0 &&
               ordering !== 'hot' &&
@@ -568,6 +630,12 @@ export function useBatchPosts() {
               );
             }
           }
+
+          // After iterating communities, set global hasMore based on any next cursor
+          setHasMore(anyCommunityHasNext);
+
+          // After iterating communities, set global hasMore based on any next cursor
+          setHasMore(anyCommunityHasNext);
 
           // Supplement with selected users if any (communities mode)
           if (content.selectedUsers.length > 0) {
@@ -1059,6 +1127,7 @@ export function useLoadMorePosts() {
               '[useLoadMorePosts] ℹ️ No active communities subset to load.'
             );
           }
+          let anyCommunityHasNext = false;
           for (const community of communities) {
             if (blockedIds.has(community.id)) {
               console.log(
@@ -1079,9 +1148,7 @@ export function useLoadMorePosts() {
                 community.id.toString(),
                 response.nextCursor as string
               );
-            } else {
-              // If one community has no next page, we set hasMore to false only if ALL are exhausted
-              // This simple approach: track absence and evaluate after loop
+              anyCommunityHasNext = true;
             }
             let communityPosts = response.posts.filter((post: PostView) => {
               if (!post.post.url) return false;
@@ -1154,6 +1221,9 @@ export function useLoadMorePosts() {
               });
             });
           }
+          // After iterating communities, set global hasMore based on any next cursor
+          setHasMore(anyCommunityHasNext);
+
           // Users fetch (client-side filter) if users selected
           if (content.selectedUsers.length > 0) {
             const response = await apiClient.getPosts({
