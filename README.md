@@ -1,83 +1,46 @@
-# React + TypeScript + Vite
+# Lenscape
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Lenscape is an immersive Lemmy media slideshow built with React, TypeScript, and Vite. It focuses on
+lean media playback, gesture support, and infinite scrolling for community content.
 
-Currently, two official plugins are available:
+## Requirements
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react)
-  uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc)
-  uses [SWC](https://swc.rs/) for Fast Refresh
+- Node.js 18 or newer (developed against Node 20)
+- npm 9 or newer (bundled with Node installations)
 
-## Expanding the ESLint configuration
+## Run Locally
 
-If you are developing a production application, we recommend updating the configuration to enable
-type-aware lint rules:
+1. Clone the repository and move into the project folder:
+   ```bash
+   git clone https://github.com/thecodinglynx/lemmy-client.git
+   cd lemmy-client
+   ```
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Start the Vite development server:
+   ```bash
+   npm run dev
+   ```
+4. Open the printed URL (defaults to `http://localhost:5173`). The dev server exposes two helpful
+   proxies:
+   - `/api/lemmy` forwards API calls to whichever instance you configure inside the Settings panel.
+   - `/api/media` wraps remote media to avoid CORS and content-type surprises.
+5. In the UI, open **Settings → Server** to pick your Lemmy instance. The default is
+   `https://lemmy.world`, and you can toggle the local proxy if the instance blocks cross-origin
+   requests.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Useful npm Scripts
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-]);
-```
-
-You can also install
-[eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x)
-and
-[eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom)
-for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x';
-import reactDom from 'eslint-plugin-react-dom';
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-]);
-```
+- `npm run build` – type-check and bundle the app for production.
+- `npm run preview` – serve the production build locally.
+- `npm run test` – run the Vitest unit test suite.
+- `npm run lint` – run ESLint with the project rules.
 
 ## Slideshow Infinite Loading
 
-The slideshow now supports incremental ("infinite") loading of media:
+The slideshow supports incremental ("infinite") loading of media:
 
 - Initial batches of posts are fetched via `useBatchPosts` using Lemmy pagination cursors.
 - As the viewer approaches the end of the currently loaded posts (within 3 items of the end), an

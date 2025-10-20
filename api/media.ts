@@ -122,6 +122,33 @@ export default async function handler(
       }
     }
 
+    let parsedFinalUrl: URL | null = null;
+    try {
+      parsedFinalUrl = new URL(finalUrl);
+    } catch {
+      parsedFinalUrl = null;
+    }
+
+    if (
+      parsedFinalUrl?.hostname.toLowerCase() === 'i.imgur.com' &&
+      parsedFinalUrl.pathname.toLowerCase().endsWith('.gifv')
+    ) {
+      parsedFinalUrl.pathname = parsedFinalUrl.pathname.replace(
+        /\.gifv$/i,
+        '.mp4'
+      );
+      finalUrl = parsedFinalUrl.toString();
+      resolutionPath =
+        resolutionPath === 'direct'
+          ? 'imgur:gifv'
+          : `${resolutionPath}|imgur:gifv`;
+      console.info('[api/media] Rewrote imgur gifv', {
+        targetUrl,
+        finalUrl,
+        resolutionPath,
+      });
+    }
+
     const upstream = await fetch(finalUrl, {
       headers: {
         'User-Agent': 'LemmyClient (Vercel media proxy)',
@@ -137,9 +164,20 @@ export default async function handler(
 
     // Copy selected headers
     const ct = upstream.headers.get('content-type');
+    res.setHeader('X-Media-Proxy-Upstream-Status', String(upstream.status));
+    if (ct) {
+      res.setHeader('X-Media-Proxy-Upstream-Content-Type', ct);
+    }
     // Guard against upstream HTML/JSON delivered to media elements
     const lowerCT = ct?.toLowerCase() || '';
     if (lowerCT.includes('text/html') || lowerCT.includes('application/json')) {
+      console.warn('[api/media] Unexpected upstream content type', {
+        targetUrl,
+        finalUrl,
+        resolutionPath,
+        upstreamStatus: upstream.status,
+        upstreamContentType: ct,
+      });
       res.statusCode = 502;
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Access-Control-Allow-Origin', '*');
