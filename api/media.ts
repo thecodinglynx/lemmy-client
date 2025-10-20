@@ -149,14 +149,27 @@ export default async function handler(
       });
     }
 
+    const requestHeaders: Record<string, string> = {
+      'User-Agent': 'LemmyClient (Vercel media proxy)',
+      Accept: '*/*',
+      Referer: redgifsMatch
+        ? 'https://www.redgifs.com'
+        : new URL(finalUrl).origin,
+    };
+
+    if (parsedFinalUrl?.hostname.toLowerCase() === 'i.imgur.com') {
+      requestHeaders.Accept = 'video/*;q=1,image/*;q=0.9,*/*;q=0.8';
+      requestHeaders.Origin = 'https://imgur.com';
+      requestHeaders.Referer = 'https://imgur.com/';
+      console.info('[api/media] Applying imgur header tweaks', {
+        targetUrl,
+        finalUrl,
+        resolutionPath,
+      });
+    }
+
     const upstream = await fetch(finalUrl, {
-      headers: {
-        'User-Agent': 'LemmyClient (Vercel media proxy)',
-        Accept: '*/*',
-        Referer: redgifsMatch
-          ? 'https://www.redgifs.com'
-          : new URL(finalUrl).origin,
-      },
+      headers: requestHeaders,
     });
 
     // Propagate status
@@ -165,6 +178,7 @@ export default async function handler(
     // Copy selected headers
     const ct = upstream.headers.get('content-type');
     res.setHeader('X-Media-Proxy-Upstream-Status', String(upstream.status));
+    res.setHeader('X-Media-Proxy-Upstream-Url', upstream.url || finalUrl);
     if (ct) {
       res.setHeader('X-Media-Proxy-Upstream-Content-Type', ct);
     }
@@ -177,6 +191,7 @@ export default async function handler(
         resolutionPath,
         upstreamStatus: upstream.status,
         upstreamContentType: ct,
+        upstreamFinalUrl: upstream.url,
       });
       res.statusCode = 502;
       res.setHeader('Content-Type', 'application/json');
