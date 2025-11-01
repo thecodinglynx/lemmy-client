@@ -16,9 +16,17 @@ function getApiClient() {
   const serverSettings = settings.server || {
     instanceUrl: 'https://lemmy.world',
     customProxy: false,
+    auth: null,
   };
 
-  console.log('🔍 Final serverSettings used:', serverSettings);
+  const sanitizedSettings = {
+    instanceUrl: serverSettings.instanceUrl,
+    customProxy: serverSettings.customProxy,
+    hasAuth: !!serverSettings.auth?.jwt,
+    authUser: serverSettings.auth?.username ?? null,
+  };
+
+  console.log('🔍 Final serverSettings used:', sanitizedSettings);
   console.log('🔍 customProxy setting:', serverSettings.customProxy);
   console.log('🔍 instanceUrl setting:', serverSettings.instanceUrl);
 
@@ -38,7 +46,12 @@ function getApiClient() {
   );
   console.log(`🔗 API Base URL: ${baseUrl}`);
 
-  return new LemmyAPIClient(baseUrl);
+  const client = new LemmyAPIClient(baseUrl);
+  if (serverSettings.auth?.jwt) {
+    client.setAuth(serverSettings.auth.jwt);
+  }
+
+  return client;
 }
 
 // Hook for fetching posts from communities

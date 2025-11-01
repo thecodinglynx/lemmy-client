@@ -266,6 +266,15 @@ export interface ContentState {
   likedPosts?: Record<string, SlideshowPost & { likedAt: number }>;
 }
 
+export interface ServerAuthState {
+  username?: string;
+  jwt?: string | null;
+  expiresAt?: number | null;
+  loggedInAt?: number | null;
+  personId?: number | null;
+  displayName?: string | null;
+}
+
 export interface SettingsState {
   theme: 'light' | 'dark' | 'auto';
   autoAdvance: boolean;
@@ -289,6 +298,7 @@ export interface SettingsState {
   server: {
     instanceUrl: string;
     customProxy: boolean;
+    auth?: ServerAuthState | null;
   };
   accessibility: {
     highContrast: boolean;

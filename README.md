@@ -33,16 +33,22 @@ lean media playback, gesture support, and infinite scrolling for community conte
 
 ## Useful npm Scripts
 
-- `npm run build` – type-check and bundle the app for production.
-- `npm run preview` – serve the production build locally.
-- `npm run test` – run the Vitest unit test suite.
-- `npm run lint` – run ESLint with the project rules.
+## Authentication
+
+- Launch the app, open **Settings → Server**, and expand the _Authentication_ block.
+- Enter your Lemmy username (or email) and password, then click **Sign In**. The client exchanges
+  the credentials for a short-lived JWT via `/api/v3/user/login`.
+- Successful sign-in stores the JWT (not the password) in local storage so subsequent media/API
+  requests include `Authorization: Bearer …` headers.
+- Use **Refresh Token** to re-authenticate if the session expires, or **Sign Out** to clear the
+  token and purge cached media/query data.
+- Signing in allows the slideshow to surface subscriber-only, private, or account-gated media that
+  would otherwise be hidden from anonymous sessions.
 
 ## Slideshow Infinite Loading
 
 The slideshow supports incremental ("infinite") loading of media:
 
-- Initial batches of posts are fetched via `useBatchPosts` using Lemmy pagination cursors.
 - As the viewer approaches the end of the currently loaded posts (within 3 items of the end), an
   additional batch is fetched automatically by the `useLoadMorePosts` hook.
 - Pagination uses Lemmy's `page_cursor` (`nextCursor` in the client) for either the global feed or

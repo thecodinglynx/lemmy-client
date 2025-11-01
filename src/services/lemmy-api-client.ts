@@ -3,6 +3,8 @@ import type {
   GetPostsResponse,
   GetCommunity,
   ListCommunities,
+  Login,
+  LoginResponse,
   PostView as LemmyPostView,
   Community as LemmyCommunity,
   Person as LemmyPerson,
@@ -175,19 +177,22 @@ class CustomLemmyHttp {
     this.headers = { ...this.headers, ...headers };
   }
 
-  private async makeRequest<T>(endpoint: string, params?: any): Promise<T> {
-    const start = performance.now();
-    let url = `${this.baseUrl}${endpoint}`;
+  clearAuthHeader() {
+    this.headers = Object.fromEntries(
+      Object.entries(this.headers).filter(
+        ([key]) => key.toLowerCase() !== 'authorization'
+      )
+    );
+  }
 
-    // Create URL object to handle query parameters properly
+  private buildUrl(endpoint: string, params?: Record<string, any>): string {
+    const url = `${this.baseUrl}${endpoint}`;
     const urlObj = new URL(url);
 
-    // If using proxy, add the server parameter
     if (this.isProxy && this.serverParam) {
       urlObj.searchParams.set('server', this.serverParam);
     }
 
-    // Add endpoint parameters to the URL
     if (params) {
       Object.entries(params).forEach(([key, value]) => {
         if (value !== undefined && value !== null) {
@@ -196,8 +201,26 @@ class CustomLemmyHttp {
       });
     }
 
-    const finalUrl = urlObj.toString();
-    console.log('📡 Making request to:', finalUrl);
+    return urlObj.toString();
+  }
+
+  private async sendJson<T>(
+    endpoint: string,
+    {
+      method,
+      params,
+      body,
+      headers: extraHeaders,
+    }: {
+      method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+      params?: Record<string, any>;
+      body?: any;
+      headers?: Record<string, string>;
+    }
+  ): Promise<T> {
+    const start = performance.now();
+    const finalUrl = this.buildUrl(endpoint, params);
+    console.log('📡 Making request to:', finalUrl, 'method:', method);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => {
@@ -209,14 +232,27 @@ class CustomLemmyHttp {
 
     let response: Response;
     try {
-      response = await fetch(finalUrl, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          ...this.headers,
-        },
+      const headers: Record<string, string> = {
+        Accept: 'application/json',
+        ...this.headers,
+        ...(extraHeaders || {}),
+      };
+
+      if (method !== 'GET' || body !== undefined) {
+        headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+      }
+
+      const init: RequestInit = {
+        method,
+        headers,
         signal: controller.signal,
-      });
+      };
+
+      if (body !== undefined) {
+        init.body = typeof body === 'string' ? body : JSON.stringify(body);
+      }
+
+      response = await fetch(finalUrl, init);
     } catch (err) {
       const elapsed = Math.round(performance.now() - start);
       if ((err as any)?.name === 'AbortError') {
@@ -235,18 +271,38 @@ class CustomLemmyHttp {
 
     console.log('📥 Response status:', response.status, response.statusText);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log('❌ Error response body:', errorText);
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    const responseText = await response.text();
+    if (method === 'GET') {
+      console.log('📄 Response body length:', responseText.length);
+      console.log(
+        '📄 Response body preview:',
+        responseText.substring(0, 200) + '...'
+      );
     }
 
-    const responseText = await response.text();
-    console.log('📄 Response body length:', responseText.length);
-    console.log(
-      '📄 Response body preview:',
-      responseText.substring(0, 200) + '...'
-    );
+    if (!response.ok) {
+      console.log('❌ Error response body:', responseText);
+      let errorJson: any;
+      try {
+        errorJson = JSON.parse(responseText);
+      } catch {
+        errorJson = undefined;
+      }
+
+      const error = new Error(
+        `HTTP ${response.status}: ${response.statusText}`
+      ) as Error & {
+        status?: number;
+        responseBody?: string;
+        responseJson?: any;
+        url?: string;
+      };
+      error.status = response.status;
+      error.responseBody = responseText;
+      error.responseJson = errorJson;
+      error.url = finalUrl;
+      throw error;
+    }
 
     try {
       const jsonData = JSON.parse(responseText);
@@ -259,6 +315,18 @@ class CustomLemmyHttp {
       console.log('📄 Full response body:', responseText);
       throw new Error(`Failed to parse JSON response: ${parseError}`);
     }
+  }
+
+  private async makeRequest<T>(endpoint: string, params?: any): Promise<T> {
+    return this.sendJson(endpoint, { method: 'GET', params });
+  }
+
+  private async postJson<T>(endpoint: string, body: any): Promise<T> {
+    return this.sendJson(endpoint, { method: 'POST', body });
+  }
+
+  async login(params: Login): Promise<LoginResponse> {
+    return this.postJson('/user/login', params);
   }
 
   async getPosts(params: any = {}): Promise<any> {
@@ -310,6 +378,19 @@ export class LemmyAPIClient {
   setAuth(jwt: string) {
     this.jwt = jwt;
     this.client.setHeaders({ Authorization: `Bearer ${jwt}` });
+  }
+
+  clearAuth() {
+    this.jwt = undefined;
+    this.client.clearAuthHeader();
+  }
+
+  async login(params: Login): Promise<LoginResponse> {
+    const response = await this.makeRequest(() => this.client.login(params));
+    if ((response as any)?.jwt) {
+      this.setAuth((response as any).jwt);
+    }
+    return response;
   }
 
   /**
@@ -681,7 +762,8 @@ export const lemmyApi = new LemmyAPIClient();
 // Function to create API client with custom server settings
 export function createLemmyApiClient(
   instanceUrl: string,
-  useProxy: boolean = false
+  useProxy: boolean = false,
+  authToken?: string | null
 ): LemmyAPIClient {
   // Strip protocol from instanceUrl for consistent handling
   const cleanInstanceUrl = instanceUrl.replace(/^https?:\/\//, '');
@@ -694,5 +776,9 @@ export function createLemmyApiClient(
     `🔧 createLemmyApiClient: instanceUrl=${instanceUrl}, useProxy=${useProxy}, baseUrl=${baseUrl}`
   );
 
-  return new LemmyAPIClient(baseUrl);
+  const client = new LemmyAPIClient(baseUrl);
+  if (authToken) {
+    client.setAuth(authToken);
+  }
+  return client;
 }

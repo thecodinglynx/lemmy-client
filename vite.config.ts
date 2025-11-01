@@ -101,14 +101,51 @@ export default defineConfig({
         // Handle Lemmy API proxying
         server.middlewares.use('/api/lemmy', async (req, res) => {
           const start = Date.now();
-          const attemptFetch = async (targetUrl: string, attempt: number) => {
+          const method = (req.method || 'GET').toUpperCase();
+          let requestBody: Buffer | undefined;
+
+          if (method !== 'GET' && method !== 'HEAD') {
+            requestBody = await new Promise<Buffer>((resolve, reject) => {
+              const chunks: Buffer[] = [];
+              req
+                .on('data', (chunk) => {
+                  chunks.push(
+                    Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+                  );
+                })
+                .on('end', () => {
+                  const merged = Buffer.concat(chunks);
+                  resolve(merged.length > 0 ? merged : Buffer.alloc(0));
+                })
+                .on('error', reject);
+            });
+            if (requestBody.length === 0) {
+              requestBody = undefined;
+            }
+          }
+
+          const attemptFetch = async (
+            targetUrl: string,
+            attempt: number,
+            body?: Buffer
+          ) => {
             try {
               const response = await fetch(targetUrl, {
-                method: req.method || 'GET',
+                method,
                 headers: {
                   Accept: 'application/json',
                   'User-Agent': req.headers['user-agent'] || 'Lemmy Client',
+                  ...(req.headers['content-type']
+                    ? { 'Content-Type': String(req.headers['content-type']) }
+                    : {}),
+                  ...(req.headers['authorization']
+                    ? { Authorization: String(req.headers['authorization']) }
+                    : {}),
                 },
+                body:
+                  body && method !== 'GET' && method !== 'HEAD'
+                    ? body
+                    : undefined,
               });
               return response;
             } catch (err: any) {
@@ -121,7 +158,7 @@ export default defineConfig({
                   `🌐 DNS lookup failed (attempt ${attempt + 1}) for ${targetUrl}. Retrying in ${delay}ms`
                 );
                 await new Promise((r) => setTimeout(r, delay));
-                return attemptFetch(targetUrl, attempt + 1);
+                return attemptFetch(targetUrl, attempt + 1, body);
               }
               throw err;
             }
@@ -146,7 +183,7 @@ export default defineConfig({
             console.log(`🔄 Proxying ${req.method} ${req.url} → ${targetUrl}`);
 
             // Forward the request to the target server
-            const response = await attemptFetch(targetUrl, 0);
+            const response = await attemptFetch(targetUrl, 0, requestBody);
 
             console.log(`📥 Response from ${targetServer}: ${response.status}`);
             console.log(

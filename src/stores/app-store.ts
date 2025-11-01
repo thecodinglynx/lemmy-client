@@ -73,6 +73,7 @@ const initialSettingsState: SettingsState = {
   server: {
     instanceUrl: 'https://lemmy.world',
     customProxy: false,
+    auth: null,
   },
   accessibility: {
     highContrast: false,
@@ -148,8 +149,6 @@ interface AppStore extends AppState {
   // Content actions
   addCommunity: (community: Community) => void;
   removeCommunity: (communityId: number) => void;
-  addUser: (user: Person) => void;
-  removeUser: (userId: number) => void;
   // Community block list actions
   blockCommunity: (community: Community) => void;
   unblockCommunity: (communityId: number) => void;
@@ -598,7 +597,37 @@ export const useAppStore = create<AppStore>()(
         // Settings actions
         updateSettings: (settings) =>
           set((state) => {
+            const previousInstance = state.settings?.server?.instanceUrl;
+            const nextInstance = settings.server?.instanceUrl;
+            const instanceChanged =
+              typeof nextInstance === 'string' &&
+              nextInstance.trim().length > 0 &&
+              nextInstance !== previousInstance;
+
+            const previousAuthToken = state.settings?.server?.auth?.jwt ?? null;
+            let nextAuthToken = previousAuthToken;
+            if (settings.server && 'auth' in settings.server) {
+              nextAuthToken = settings.server.auth?.jwt ?? null;
+            }
+            const authChanged =
+              settings.server !== undefined &&
+              (settings.server.auth !== undefined || instanceChanged) &&
+              nextAuthToken !== previousAuthToken;
+
             state.settings = { ...state.settings, ...settings };
+
+            if (instanceChanged || authChanged) {
+              state.content.globalCursor = undefined;
+              state.content.paginationCursors = {} as any;
+              state.content.hasMore = true;
+            }
+
+            if (authChanged) {
+              state.content.queue = [];
+              state.content.viewedPosts = new Set();
+              state.slideshow.posts = [];
+              state.slideshow.currentIndex = 0;
+            }
           }),
 
         resetSettings: () =>

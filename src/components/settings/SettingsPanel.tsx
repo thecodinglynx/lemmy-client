@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAppStore } from '@stores/app-store';
+import type { Login } from 'lemmy-js-client';
 import { createLemmyApiClient } from '@services/lemmy-api-client';
 import { useCheckCommunityMedia } from '@hooks/useContent';
 import { MediaCache } from '@utils/media-cache';
@@ -18,6 +19,8 @@ import {
   GlobeAltIcon,
   PlusIcon,
   XMarkIcon,
+  EyeIcon,
+  EyeSlashIcon,
 } from '@heroicons/react/24/outline';
 
 interface SettingsPanelProps {
@@ -95,6 +98,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
   } = useAppStore();
   const navigate = useNavigate();
   const checkCommunityMedia = useCheckCommunityMedia();
+  const authState = settings.server.auth;
 
   // Local state for adding new communities/users
   const [newCommunityName, setNewCommunityName] = useState('');
@@ -105,6 +109,12 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
   const [connectionTestResult, setConnectionTestResult] = useState<
     string | null
   >(null);
+  const [authUsername, setAuthUsername] = useState(authState?.username ?? '');
+  const [authPassword, setAuthPassword] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginSuccess, setLoginSuccess] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   // Handle Escape key to close settings
   useEffect(() => {
@@ -119,6 +129,12 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
       document.removeEventListener('keydown', handleKeyPress);
     };
   }, [navigate]);
+
+  useEffect(() => {
+    if (authState?.username) {
+      setAuthUsername(authState.username);
+    }
+  }, [authState?.username]);
 
   // Handle adding a community by searching for it first
   const handleAddCommunity = async () => {
@@ -135,7 +151,8 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
       );
       const lemmyApi = createLemmyApiClient(
         settings.server.instanceUrl,
-        settings.server.customProxy
+        settings.server.customProxy,
+        authState?.jwt ?? null
       );
       const communities = await lemmyApi.searchCommunities(
         newCommunityName.trim(),
@@ -220,7 +237,8 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
     try {
       const testApi = createLemmyApiClient(
         settings.server.instanceUrl,
-        settings.server.customProxy
+        settings.server.customProxy,
+        authState?.jwt ?? null
       );
       await testApi.getSite();
       setConnectionTestResult('Connection successful! ✅');
@@ -232,6 +250,132 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
     } finally {
       setIsTestingConnection(false);
     }
+  };
+
+  const clearCachesForAuthChange = async () => {
+    try {
+      await cacheUtils.clearCache();
+    } catch (err) {
+      console.warn(
+        '[Settings] Failed clearing query cache after auth change',
+        err
+      );
+    }
+
+    try {
+      await MediaCache.getInstance().clear();
+    } catch (err) {
+      console.warn(
+        '[Settings] Failed clearing media cache after auth change',
+        err
+      );
+    }
+  };
+
+  const handleLoginSubmit = async (
+    event?: React.FormEvent<HTMLFormElement>
+  ) => {
+    event?.preventDefault();
+    if (isLoggingIn) return;
+
+    const username = authUsername.trim();
+    if (!username) {
+      setLoginError('Username or email is required.');
+      return;
+    }
+    if (!authPassword) {
+      setLoginError('Password is required.');
+      return;
+    }
+
+    setIsLoggingIn(true);
+    setLoginError(null);
+    setLoginSuccess(null);
+
+    try {
+      const authClient = createLemmyApiClient(
+        settings.server.instanceUrl,
+        settings.server.customProxy
+      );
+      const payload: Login = {
+        username_or_email: username,
+        password: authPassword,
+      };
+      const response = await authClient.login(payload);
+
+      const jwt = response?.jwt;
+      if (!jwt) {
+        throw new Error('Login response did not include a session token.');
+      }
+
+      let personId: number | null = null;
+      let displayName: string | null = null;
+      try {
+        const siteInfo = await authClient.getSite();
+        const myUser = (siteInfo as any)?.my_user;
+        const person =
+          myUser?.local_user_view?.person ||
+          myUser?.person_view?.person ||
+          myUser?.person ||
+          null;
+        if (person) {
+          personId = person.id ?? null;
+          displayName = person.display_name || person.name || null;
+        }
+      } catch (siteErr) {
+        console.warn('Failed to fetch site info after login:', siteErr);
+      }
+
+      updateSettings({
+        server: {
+          ...settings.server,
+          auth: {
+            username,
+            jwt,
+            loggedInAt: Date.now(),
+            personId,
+            displayName,
+          },
+        },
+      });
+
+      await clearCachesForAuthChange();
+
+      setAuthPassword('');
+      setLoginSuccess(`Signed in as ${displayName || username}.`);
+    } catch (err: any) {
+      console.error('Authentication failed:', err);
+      const message =
+        err?.responseJson?.error ||
+        err?.responseJson?.message ||
+        err?.message ||
+        'Login failed. Please verify your credentials.';
+      setLoginError(message);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (!authState?.jwt) {
+      setLoginSuccess(null);
+      setLoginError(null);
+      setAuthPassword('');
+      return;
+    }
+
+    updateSettings({
+      server: {
+        ...settings.server,
+        auth: null,
+      },
+    });
+
+    await clearCachesForAuthChange();
+
+    setAuthPassword('');
+    setLoginError(null);
+    setLoginSuccess('Signed out.');
   };
 
   const handleResetToDefaults = async () => {
@@ -731,6 +875,131 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ className = '' }) => {
                   Routes requests through a local proxy to avoid CORS
                   restrictions
                 </p>
+              </div>
+
+              <div className='pt-5 mt-6 border-t border-gray-200 dark:border-gray-700'>
+                <div className='flex items-center space-x-2'>
+                  <KeyIcon className='h-5 w-5 text-purple-600 dark:text-purple-400' />
+                  <h4 className='text-sm font-semibold text-gray-900 dark:text-white'>
+                    Authentication
+                  </h4>
+                </div>
+                <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+                  Sign in to request a Lemmy session token. Authenticated
+                  requests can surface subscribed/private media and respect your
+                  account&apos;s content preferences.
+                </p>
+                <form className='mt-4 space-y-4' onSubmit={handleLoginSubmit}>
+                  <div className='grid gap-4 sm:grid-cols-2'>
+                    <div>
+                      <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'>
+                        Username or Email
+                      </label>
+                      <input
+                        type='text'
+                        value={authUsername}
+                        onChange={(e) => setAuthUsername(e.target.value)}
+                        autoComplete='username'
+                        className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+                        placeholder='alice'
+                      />
+                    </div>
+                    <div>
+                      <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'>
+                        Password
+                      </label>
+                      <div className='relative'>
+                        <input
+                          type={showPassword ? 'text' : 'password'}
+                          value={authPassword}
+                          onChange={(e) => setAuthPassword(e.target.value)}
+                          autoComplete='current-password'
+                          className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent pr-10'
+                          placeholder='••••••••'
+                        />
+                        <button
+                          type='button'
+                          onClick={() => setShowPassword((v) => !v)}
+                          className='absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+                          aria-label={
+                            showPassword ? 'Hide password' : 'Show password'
+                          }
+                        >
+                          {showPassword ? (
+                            <EyeSlashIcon className='h-5 w-5' />
+                          ) : (
+                            <EyeIcon className='h-5 w-5' />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {loginError && (
+                    <p className='text-sm text-red-600 dark:text-red-400'>
+                      {loginError}
+                    </p>
+                  )}
+                  {loginSuccess && (
+                    <p className='text-sm text-green-600 dark:text-green-400'>
+                      {loginSuccess}
+                    </p>
+                  )}
+
+                  <div className='flex flex-wrap items-center gap-3'>
+                    <button
+                      type='submit'
+                      disabled={
+                        isLoggingIn ||
+                        !authUsername.trim() ||
+                        !authPassword.trim()
+                      }
+                      className='px-4 py-2 text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors'
+                    >
+                      {isLoggingIn ? (
+                        <>
+                          <span className='w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin' />
+                          <span>Signing in…</span>
+                        </>
+                      ) : authState?.jwt ? (
+                        'Refresh Token'
+                      ) : (
+                        'Sign In'
+                      )}
+                    </button>
+                    {authState?.jwt && (
+                      <button
+                        type='button'
+                        onClick={handleLogout}
+                        className='px-4 py-2 text-sm font-medium rounded-md border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors'
+                      >
+                        Sign Out
+                      </button>
+                    )}
+                    {authState?.jwt && (
+                      <span className='text-xs text-gray-500 dark:text-gray-400'>
+                        Signed in as{' '}
+                        <span className='font-medium text-gray-700 dark:text-gray-200'>
+                          {authState.displayName || authState.username}
+                        </span>
+                        {authState.loggedInAt && (
+                          <>
+                            {' '}
+                            · token issued{' '}
+                            {new Date(authState.loggedInAt).toLocaleString()}
+                          </>
+                        )}
+                      </span>
+                    )}
+                  </div>
+
+                  <p className='text-xs text-gray-500 dark:text-gray-400'>
+                    Tip: enable two-factor authentication (2FA) on your Lemmy
+                    account for additional security. This client currently
+                    supports password-based login; if your instance requires an
+                    app password, enter it here.
+                  </p>
+                </form>
               </div>
             </div>
           </SettingsSection>

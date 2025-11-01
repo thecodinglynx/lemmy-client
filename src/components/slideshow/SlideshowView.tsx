@@ -130,6 +130,9 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     consecutiveErrorSkipsRef.current = 0;
   }, []);
 
+  const isRemovedPlaceholder = (width: number, height: number) =>
+    width === 130 && height === 60;
+
   // On media error (e.g., 404), skip forward until something loads or we hit a safe cap
   const handleMediaError = useCallback(() => {
     const total = (slideshow.slideshow.posts || []).length;
@@ -146,6 +149,36 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
     }
     slideshow.next();
   }, [slideshow]);
+
+  const handleImageLoad = useCallback(
+    (event: React.SyntheticEvent<HTMLImageElement>) => {
+      const { naturalWidth, naturalHeight } = event.currentTarget;
+      if (isRemovedPlaceholder(naturalWidth, naturalHeight)) {
+        console.warn(
+          `[Slideshow] Removed media placeholder detected (${naturalWidth}x${naturalHeight}). Skipping.`
+        );
+        handleMediaError();
+        return;
+      }
+      handleMediaLoadSuccess();
+    },
+    [handleMediaError, handleMediaLoadSuccess]
+  );
+
+  const handleVideoLoaded = useCallback(
+    (event: React.SyntheticEvent<HTMLVideoElement>) => {
+      const { videoWidth, videoHeight } = event.currentTarget;
+      if (isRemovedPlaceholder(videoWidth, videoHeight)) {
+        console.warn(
+          `[Slideshow] Removed media placeholder detected (${videoWidth}x${videoHeight}). Skipping.`
+        );
+        handleMediaError();
+        return;
+      }
+      handleMediaLoadSuccess();
+    },
+    [handleMediaError, handleMediaLoadSuccess]
+  );
 
   // Setup keyboard navigation
   useKeyboardNavigation({
@@ -682,8 +715,8 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
                 autoPlay
                 muted
                 playsInline
-                onLoadedData={handleMediaLoadSuccess}
-                onCanPlay={handleMediaLoadSuccess}
+                onLoadedData={handleVideoLoaded}
+                onCanPlay={handleVideoLoaded}
                 onEnded={() => {
                   // When video timing is 0 => play full duration, then advance
                   if (slideshow.slideshow.timing.videos === 0) {
@@ -700,7 +733,7 @@ export const SlideshowView: React.FC<SlideshowViewProps> = ({
                 src={getProxiedMediaUrl(currentPost.url)}
                 alt={currentPost.title}
                 className='max-w-full max-h-full object-contain'
-                onLoad={handleMediaLoadSuccess}
+                onLoad={handleImageLoad}
                 onError={() => {
                   console.error('Image load error for:', currentPost.url);
                   handleMediaError();
