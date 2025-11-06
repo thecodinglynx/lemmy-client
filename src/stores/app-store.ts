@@ -149,6 +149,8 @@ interface AppStore extends AppState {
   // Content actions
   addCommunity: (community: Community) => void;
   removeCommunity: (communityId: number) => void;
+  addUser: (user: Person) => void;
+  removeUser: (userId: number) => void;
   // Community block list actions
   blockCommunity: (community: Community) => void;
   unblockCommunity: (communityId: number) => void;
